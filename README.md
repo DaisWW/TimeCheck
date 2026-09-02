@@ -72,16 +72,27 @@ python -m attendance_analyzer.cli "input\2026.5考勤.xlsx" -c config.toml
 
 ## 打包 EXE
 
-在开发机安装依赖：
+打包只需要在有 Python 的开发机执行；HR 机器不需要安装 Python、依赖或网络环境：
 
 ```powershell
-python -m pip install -r requirements.txt
+powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 ```
 
-执行打包：
+脚本会安装当前项目依赖，并生成完整发布目录：
+
+```text
+dist\dingding-attendance\
+  dingding-attendance.exe
+  run_attendance.bat
+  config.toml
+  input\
+  output\
+```
+
+将整个 `dist\dingding-attendance` 目录复制到 HR 机器。把考勤 Excel 放入其中的 `input` 目录后，可以双击 `run_attendance.bat` 批量分析；批处理会在结束后保留窗口，方便查看结果。也可以把 Excel 拖到 `dingding-attendance.exe` 或 `run_attendance.bat` 上，或者传入命令行参数：
 
 ```powershell
-pyinstaller --onefile --name dingding-attendance main.py
+run_attendance.bat "考勤.xlsx" -c config.toml -o output\结果.xlsx
 ```
 
-财务机器只需要 `dist\dingding-attendance.exe`、`input` 目录中的钉钉导出 Excel，以及可选的 `config.toml`。分析结果会自动写入 `output` 目录。
+默认结果写入发布目录的 `output`。HR 可直接编辑同目录的 `config.toml` 调整规则，不需要重新打包。
