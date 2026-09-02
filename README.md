@@ -35,6 +35,16 @@ python -m attendance_analyzer.cli "input\2026.5考勤.xlsx" -c config.toml
 
 默认规则已经放在 `config.toml` 中，财务机器上可以直接修改这个文件。`config.example.toml` 是备用样板。
 
+## 目录结构
+
+- `attendance_analyzer/`：分析源码包。
+- `tests/`：自动化测试。
+- `scripts/`：打包脚本。
+- `input/`：待分析的钉钉 Excel；实际考勤文件只保存在本地，不提交到 Git。
+- `output/`：分析结果；历史结果可放在 `output/archive/`，也不提交到 Git。
+- `main.py`：命令行和 EXE 的顶层入口。
+- `config.toml`：当前使用的规则；`config.example.toml`：配置模板。
+
 打包为 `.exe` 后，不带参数双击会批量处理 `input` 目录；也可以把单个钉钉 Excel 直接拖到 `.exe` 上运行。两种方式的结果默认都写入 `output` 目录。
 
 ## 设计

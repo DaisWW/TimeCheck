@@ -14,9 +14,12 @@ dist/
 *.egg-info/
 *.spec
 
-# Local attendance source files and generated reports
-input/
-output/
+# Local attendance source files and generated reports. Keep the runtime
+# directories visible in a fresh checkout without committing their contents.
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
 outputs/
 *.xlsx
 *.xlsm
