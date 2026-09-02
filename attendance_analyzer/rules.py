@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 
 from .approval import (
+    interval_union_minutes,
     overlapping_interval_minutes,
     parse_leave_approval_intervals,
     parse_overtime_approval_intervals,
@@ -12,6 +13,12 @@ from .config import AppConfig
 from .excel_reader import fallback_punches
 from .models import DailyAttendance, OvertimeResult, PunchRecord
 from .time_utils import minutes_between, round_minutes
+
+
+# These are the only approval types that do not create a wage deduction.
+# Unknown or newly introduced leave types remain in the deductible bucket so
+# they cannot silently disappear from the payroll review.
+NON_DEDUCTIBLE_LEAVE_TYPES = frozenset({"年假", "调休"})
 
 
 class OvertimeRule:
@@ -111,6 +118,14 @@ class OvertimeRule:
             for interval in leave_intervals
             if interval.start < day_end and interval.end > day_start
         ]
+        leave_breakdown = self._leave_breakdown(day_start, day_end, relevant_leave_intervals)
+        leave_review_reasons: list[str] = []
+        if leave_breakdown["overlap_minutes"]:
+            leave_review_reasons.append(
+                f"不同请假类型区间重叠 {leave_breakdown['overlap_minutes']} 分钟"
+                f"（{leave_breakdown['overlap_types']}），已按不扣工资类型优先归类；"
+                "请 HR 确认。"
+            )
         result = replace(
             result,
             approved_leave_minutes=overlapping_interval_minutes(
@@ -118,20 +133,117 @@ class OvertimeRule:
                 day_end,
                 relevant_leave_intervals,
             ),
+            leave_work_minutes=leave_breakdown["work_minutes"],
+            leave_minutes_by_type=leave_breakdown["minutes_by_type"],
+            leave_non_deductible_minutes=leave_breakdown["non_deductible_minutes"],
+            leave_deductible_minutes=leave_breakdown["deductible_minutes"],
+            leave_overlap_minutes=leave_breakdown["overlap_minutes"],
+            leave_overlap_types=leave_breakdown["overlap_types"],
             late_raw_minutes=late_raw_minutes,
             late_leave_exempt_minutes=late_leave_exempt_minutes,
         )
-        if not relevant_leave_intervals or result.overtime_minutes == 0:
-            return result
-
-        leave_types = "、".join(sorted({interval.kind for interval in relevant_leave_intervals}))
-        return replace(
-            result,
-            leave_review_reason=(
+        if relevant_leave_intervals and result.overtime_minutes:
+            leave_types = "、".join(sorted({interval.kind for interval in relevant_leave_intervals}))
+            leave_review_reasons.append(
                 f"当天存在{leave_types}审批，同时有 {result.overtime_minutes} 分钟实际加班；"
                 "请 HR 确认请假与加班是否可同时计薪。"
-            ),
+            )
+        if leave_review_reasons:
+            return replace(result, leave_review_reason="；".join(leave_review_reasons))
+        return result
+
+    def _leave_breakdown(self, day_start: datetime, day_end: datetime, intervals) -> dict:
+        """Return raw/effective leave minutes without double-counting overlaps.
+
+        ``approved_leave_minutes`` remains the raw wall-clock union for
+        backwards compatibility.  Effective leave minutes remove the fixed
+        lunch interval.  When paid and non-paid types overlap, the overlap is
+        reported and assigned to the non-paid bucket so the two payroll
+        buckets still reconcile to the effective total.
+        """
+        by_kind: dict[str, list] = {}
+        for interval in intervals:
+            by_kind.setdefault(interval.kind, []).append(interval)
+
+        minutes_by_type = {
+            kind: self._effective_leave_minutes(day_start, day_end, kind_intervals)
+            for kind, kind_intervals in sorted(by_kind.items())
+        }
+        effective_total = self._effective_leave_minutes(day_start, day_end, intervals)
+        non_paid_intervals = [
+            interval for interval in intervals if interval.kind in NON_DEDUCTIBLE_LEAVE_TYPES
+        ]
+        paid_intervals = [
+            interval for interval in intervals if interval.kind not in NON_DEDUCTIBLE_LEAVE_TYPES
+        ]
+        non_paid_minutes = self._effective_leave_minutes(day_start, day_end, non_paid_intervals)
+        paid_minutes = self._effective_leave_minutes(day_start, day_end, paid_intervals)
+        overlap_minutes = max(non_paid_minutes + paid_minutes - effective_total, 0)
+        overlap_types: set[str] = set()
+        for left_index, left in enumerate(non_paid_intervals):
+            for right in paid_intervals:
+                overlap_start = max(left.start, right.start, day_start)
+                overlap_end = min(left.end, right.end, day_end)
+                if self._effective_leave_minutes(
+                    day_start, day_end, [left.__class__(**{**left.__dict__, "start": overlap_start, "end": overlap_end})]
+                ):
+                    overlap_types.add(f"{left.kind}/{right.kind}")
+
+        return {
+            "work_minutes": effective_total,
+            "minutes_by_type": minutes_by_type,
+            "non_deductible_minutes": non_paid_minutes,
+            "deductible_minutes": max(paid_minutes - overlap_minutes, 0),
+            "overlap_minutes": overlap_minutes,
+            "overlap_types": "、".join(sorted(overlap_types)),
+        }
+
+    def _effective_leave_minutes(self, day_start: datetime, day_end: datetime, intervals) -> int:
+        if not intervals:
+            return 0
+        clipped = [
+            interval.__class__(
+                **{
+                    **interval.__dict__,
+                    "start": max(interval.start, day_start),
+                    "end": min(interval.end, day_end),
+                }
+            )
+            for interval in intervals
+            if interval.start < day_end and interval.end > day_start
+        ]
+        clipped = [interval for interval in clipped if interval.end > interval.start]
+        if not clipped:
+            return 0
+        raw_minutes = interval_union_minutes(clipped)
+        lunch_overlap = self._break_overlap_for_intervals(
+            clipped,
+            day_start,
+            day_end,
+            self._config.rest_day.fixed_lunch_start,
+            self._config.rest_day.fixed_lunch_minutes,
         )
+        return max(raw_minutes - lunch_overlap, 0)
+
+    def _break_overlap_for_intervals(
+        self,
+        intervals,
+        day_start: datetime,
+        day_end: datetime,
+        break_start,
+        break_minutes: int,
+    ) -> int:
+        if not intervals or break_minutes <= 0:
+            return 0
+        total = 0
+        current_date = day_start.date()
+        last_date = day_end.date()
+        while current_date <= last_date:
+            period_start = datetime.combine(current_date, break_start)
+            period_end = period_start + timedelta(minutes=break_minutes)
+            total += overlapping_interval_minutes(period_start, period_end, intervals)
+            current_date += timedelta(days=1)
+        return total
 
     def _calculate_workday(
         self,

@@ -87,6 +87,15 @@ class OvertimeResult:
     late_grace_minutes: int = 0
     late_chargeable_minutes: int = 0
     late_status: str = ""
+    # Leave minutes are kept in two forms: the raw wall-clock coverage from
+    # the approval interval, and effective minutes after the fixed lunch
+    # break is removed.  The latter is used for payroll classification.
+    leave_work_minutes: int = 0
+    leave_minutes_by_type: dict[str, int] = field(default_factory=dict)
+    leave_non_deductible_minutes: int = 0
+    leave_deductible_minutes: int = 0
+    leave_overlap_minutes: int = 0
+    leave_overlap_types: str = ""
     notes: list[str] = field(default_factory=list)
 
     @property
