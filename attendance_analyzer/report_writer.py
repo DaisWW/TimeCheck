@@ -1,20 +1,36 @@
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date, datetime, timedelta
 from pathlib import Path
+import re
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from .config import AppConfig
 from .models import InputIssue, OvertimeResult
+from .rules import NON_DEDUCTIBLE_LEAVE_TYPES
 from .time_utils import fmt_dt, fmt_time
 
 
+KNOWN_LEAVE_TYPES = ("年假", "调休", "事假", "病假", "婚假", "外出", "出差", "请假")
+INVALID_SHEET_CHARS = re.compile(r"[\\/*?:\[\]]")
+
+HEADER_FILL = PatternFill("solid", fgColor="1F4E78")
+RED_FILL = PatternFill("solid", fgColor="FFC7CE")
+RED_FONT = Font(color="9C0006", bold=True)
+AMBER_FILL = PatternFill("solid", fgColor="FFEB9C")
+AMBER_FONT = Font(color="9C6500")
+YELLOW_FILL = PatternFill("solid", fgColor="FFF2CC")
+GRID_BORDER = Border(bottom=Side(style="hair", color="D9E2F3"))
+
+
 class OvertimeReportWriter:
+    """Write one auditable workbook for one input month."""
+
     def __init__(self, config: AppConfig):
         self._config = config
 
@@ -25,154 +41,188 @@ class OvertimeReportWriter:
         input_issues: list[InputIssue] | None = None,
     ) -> None:
         input_issues = input_issues or []
-        workbook = Workbook()
-        detail_sheet = workbook.active
-        detail_sheet.title = "加班明细"
+        results = sorted(results, key=lambda item: (item.employee_name, item.work_date, item.user_id))
+        grouped = _group_results(results)
+        period_start, period_end = _period_bounds(results)
 
-        self._write_detail(detail_sheet, results)
-        self._write_employee_summary(workbook.create_sheet("员工汇总"), results, input_issues)
-        self._write_daily_summary(workbook.create_sheet("每日汇总"), results, input_issues)
+        workbook = Workbook()
+        overview = workbook.active
+        overview.title = "总览"
+        self._write_overview(overview, grouped, input_issues, period_start, period_end)
+
+        # Employee tabs are the primary detailed view. They show every
+        # calendar date in the input period, including days without punches.
+        used_names = {"总览"}
+        for employee_index, ((name, user_id), items) in enumerate(sorted(grouped.items()), 1):
+            sheet_name = _unique_sheet_name(name, used_names, employee_index)
+            employee_sheet = workbook.create_sheet(sheet_name)
+            self._write_employee_detail(
+                employee_sheet,
+                name,
+                user_id,
+                items,
+                input_issues,
+                period_start,
+                period_end,
+            )
+
         self._write_supplement_punch_notifications(workbook.create_sheet("待补卡通知"), results)
         self._write_approval_reviews(workbook.create_sheet("待审核清单"), results)
-        self._write_anomalies(workbook.create_sheet("异常数据"), results)
         self._write_input_issues(workbook.create_sheet("待人工确认"), input_issues)
+        self._write_anomalies(workbook.create_sheet("异常数据"), results, input_issues)
+        self._write_daily_summary(workbook.create_sheet("每日汇总"), results, input_issues)
+
+        # Retain the former all-person tabs for existing HR scripts.
+        self._write_detail(workbook.create_sheet("加班明细"), results)
+        self._write_employee_summary(workbook.create_sheet("员工汇总"), results, input_issues)
         self._write_config(workbook.create_sheet("配置"), output_path, input_issues)
 
         for sheet in workbook.worksheets:
-            _freeze_and_autofit(sheet)
+            _finish_sheet(sheet)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         workbook.save(output_path)
 
-    def _write_detail(self, sheet, results: list[OvertimeResult]) -> None:
+    def _write_overview(
+        self,
+        sheet,
+        grouped: dict[tuple[str, str], list[OvertimeResult]],
+        input_issues: list[InputIssue],
+        period_start: date | None,
+        period_end: date | None,
+    ) -> None:
+        leave_types = _leave_types(grouped.values())
         headers = [
-            "姓名",
-            "UserId",
-            "日期",
-            "班次",
-            "加班类型",
-            "上班打卡",
-            "下班打卡",
-            "弹性下班",
-            "午休扣除(分钟)",
-            "晚餐扣除(分钟)",
-            "加班开始",
-            "加班结束",
-            "原始加班分钟",
-            "计入加班分钟",
-            "计入加班小时",
-            "关联审批单",
-            "请假审批覆盖当日分钟(非计薪)",
-            "审批加班分钟",
-            "审批差异(分钟)",
-            "审批核对状态",
-            "原始迟到分钟",
-            "请假抵扣迟到分钟",
-            "迟到分钟",
-            "迟到次数(月内)",
-            "宽限迟到分钟",
-            "扣款迟到分钟",
-            "迟到状态",
-            "统计状态",
-            "备注",
-            "计算说明",
+            "姓名", "UserId", "统计期间", "统计状态", "记录天数", "有效统计天数",
+            "加班天数", "加班总分钟", "加班总小时", "工作日加班分钟", "休息日加班分钟",
+            "节假日加班分钟", "待审核加班分钟", "漏卡天数", "请假审批覆盖分钟(原始)",
+            "请假有效分钟(扣午休)",
         ]
+        headers.extend(
+            f"{kind}分钟" + ("(不扣)" if kind in NON_DEDUCTIBLE_LEAVE_TYPES else "")
+            for kind in leave_types
+        )
+        headers.extend([
+            "其他请假分钟", "不扣工资请假分钟", "扣工资请假分钟", "请假重叠分钟",
+            "原始迟到次数", "原始迟到分钟", "请假抵扣迟到分钟", "宽限迟到分钟",
+            "扣工资迟到次数", "扣工资迟到分钟", "待审核天数", "异常天数",
+            "人工确认条数", "阻断人工确认条数", "人工确认状态", "请假与加班并存天数",
+        ])
         sheet.append(headers)
 
-        for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
-            sheet.append(
-                [
-                    result.employee_name,
-                    result.user_id,
-                    result.work_date,
-                    result.shift,
-                    result.overtime_type,
-                    fmt_dt(result.first_clock_in),
-                    fmt_dt(result.last_clock_out),
-                    fmt_time(result.standard_end),
-                    result.lunch_break_minutes,
-                    result.dinner_break_minutes,
-                    fmt_time(result.overtime_start),
-                    fmt_time(result.overtime_end),
-                    result.raw_overtime_minutes,
-                    result.overtime_minutes,
-                    result.overtime_hours,
-                    result.approval_text,
-                    result.approved_leave_minutes,
-                    result.approval_overtime_minutes,
-                    result.approval_difference_minutes,
-                    _approval_status(result),
-                    result.late_raw_minutes,
-                    result.late_leave_exempt_minutes,
-                    result.late_minutes,
-                    result.late_occurrence_number,
-                    result.late_grace_minutes,
-                    result.late_chargeable_minutes,
-                    result.late_status,
-                    _calculation_status(result, self._config),
-                    "；".join(result.notes),
-                    _calculation_text(result),
-                ]
+        period_text = _period_text(period_start, period_end)
+        for (name, user_id), items in sorted(grouped.items()):
+            all_issue_count, blocking_issue_count = _person_issue_counts(
+                input_issues, name, user_id
             )
+            row = _overview_row(
+                name, user_id, period_text, items, all_issue_count,
+                blocking_issue_count, self._config, leave_types,
+            )
+            sheet.append(row)
+            if row[13] or row[28] or row[29]:
+                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+            elif row[26] or row[27]:
+                _mark_cells(sheet[sheet.max_row], {3, 26, 27}, AMBER_FILL, AMBER_FONT)
+            elif all_issue_count:
+                _mark_cells(sheet[sheet.max_row], {3, 32, 33, 34}, YELLOW_FILL, None)
 
         _style_header(sheet)
-        for row in sheet.iter_rows(min_row=2, min_col=3, max_col=3):
-            row[0].number_format = "yyyy-mm-dd"
+        sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
+
+    def _write_employee_detail(
+        self,
+        sheet,
+        employee_name: str,
+        user_id: str,
+        items: list[OvertimeResult],
+        input_issues: list[InputIssue],
+        period_start: date | None,
+        period_end: date | None,
+    ) -> None:
+        leave_types = _leave_types([items])
+        headers = [
+            "日期", "星期", "班次", "日类型", "每日统计上班打卡", "上班打卡结果",
+            "每日统计下班打卡", "下班打卡结果", "首个有效打卡", "最后有效打卡",
+            "成对有效打卡", "跨午夜按考勤日期归属", "原始记录数", "有效记录数",
+            "使用每日统计兜底", "每日统计源行", "加班开始", "加班结束", "原始加班分钟",
+            "午休扣除分钟", "晚餐扣除分钟", "计入加班分钟", "计入加班小时", "加班计算说明",
+            "关联审批单", "请假类型", "请假审批覆盖分钟(原始)", "请假有效分钟(扣午休)",
+        ]
+        headers.extend(f"{kind}分钟" for kind in leave_types)
+        headers.extend([
+            "其他请假分钟", "不扣工资请假分钟", "扣工资请假分钟", "请假重叠分钟",
+            "原始迟到分钟", "请假抵扣迟到分钟", "规则后迟到分钟", "迟到次数(月内)",
+            "宽限迟到分钟", "扣工资迟到分钟", "迟到状态", "审批加班分钟", "审批差异分钟",
+            "审批核对状态", "漏卡", "人工确认条数", "人工确认状态", "异常状态", "统计状态", "备注",
+        ])
+        sheet.append(headers)
+
+        by_date: dict[date, OvertimeResult] = {}
+        for item in sorted(items, key=lambda value: value.work_date):
+            by_date.setdefault(item.work_date, item)
+        dates = sorted(by_date) if period_start is None or period_end is None else _date_range(period_start, period_end)
+
+        for work_date in dates:
+            result = by_date.get(work_date)
+            day_issues = _issues_for_day(input_issues, employee_name, user_id, work_date)
+            values = _employee_detail_row(result, work_date, day_issues, self._config, leave_types)
+            sheet.append(values)
+            # The seventh value from the end is the leak-card column.
+            if values[-7] in {"是", "缺少每日统计记录"}:
+                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+            elif values[-5] == "待处理":
+                _mark_cells(sheet[sheet.max_row], {len(headers) - 5, len(headers) - 4}, YELLOW_FILL, None)
+            elif "待审核" in str(values[-6]) or "待审核" in str(values[-3]):
+                _mark_cells(sheet[sheet.max_row], {len(headers) - 6, len(headers) - 3}, AMBER_FILL, AMBER_FONT)
+
+        _style_header(sheet)
+        sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
+
+    def _write_detail(self, sheet, results: list[OvertimeResult]) -> None:
+        headers = [
+            "姓名", "UserId", "日期", "班次", "加班类型", "上班打卡", "下班打卡", "弹性下班",
+            "午休扣除(分钟)", "晚餐扣除(分钟)", "加班开始", "加班结束", "原始加班分钟",
+            "计入加班分钟", "计入加班小时", "关联审批单", "请假审批覆盖当日分钟(非计薪)",
+            "请假有效分钟(扣午休)", "请假类型", "不扣工资请假分钟", "扣工资请假分钟", "请假重叠分钟",
+            "审批加班分钟", "审批差异(分钟)", "审批核对状态", "原始迟到分钟", "请假抵扣迟到分钟",
+            "迟到分钟", "迟到次数(月内)", "宽限迟到分钟", "扣款迟到分钟", "迟到状态", "统计状态",
+            "备注", "计算说明",
+        ]
+        sheet.append(headers)
+        for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
+            sheet.append(_legacy_detail_row(result, self._config))
+            if _supplement_punch_issue(result, self._config) is not None:
+                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+        _style_header(sheet)
+        sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
     def _write_employee_summary(
         self, sheet, results: list[OvertimeResult], input_issues: list[InputIssue]
     ) -> None:
-        grouped: dict[tuple[str, str], list[OvertimeResult]] = defaultdict(list)
-        for result in results:
-            grouped[(result.employee_name, result.user_id)].append(result)
-        input_issue_counts = _input_issue_counts_by_employee(input_issues)
-
-        sheet.append(
-            [
-                "姓名",
-                "UserId",
-                "统计状态",
-                "阻断输入条数",
-                "待补卡天数",
-                "待审核天数",
-                "暂计加班天数",
-                "暂计加班分钟",
-                "暂计加班小时",
-                "迟到次数",
-                "迟到分钟",
-                "请假抵扣迟到分钟",
-                "宽限迟到分钟",
-                "扣款迟到分钟",
-            ]
-        )
+        grouped = _group_results(results)
+        sheet.append([
+            "姓名", "UserId", "统计状态", "阻断输入条数", "待补卡天数", "待审核天数",
+            "暂计加班天数", "暂计加班分钟", "暂计加班小时", "迟到次数", "迟到分钟",
+            "请假抵扣迟到分钟", "宽限迟到分钟", "扣款迟到分钟",
+        ])
         for (name, user_id), items in sorted(grouped.items()):
-            minutes = sum(item.overtime_minutes for item in items)
-            input_issue_count = input_issue_counts[(name, user_id)]
-            if user_id:
-                input_issue_count += input_issue_counts[(name, "")]
-            supplement_count = sum(
-                _supplement_punch_issue(item, self._config) is not None for item in items
-            )
+            _, blocking_issue_count = _person_issue_counts(input_issues, name, user_id)
+            supplement_count = sum(_supplement_punch_issue(item, self._config) is not None for item in items)
             review_count = sum(_needs_review(item) for item in items)
-            sheet.append(
-                [
-                    name,
-                    user_id,
-                    _summary_status(input_issue_count, supplement_count, review_count),
-                    input_issue_count,
-                    supplement_count,
-                    review_count,
-                    sum(1 for item in items if item.has_overtime),
-                    minutes,
-                    round(minutes / 60, 2),
-                    sum(1 for item in items if item.late_minutes > 0),
-                    sum(item.late_minutes for item in items),
-                    sum(item.late_leave_exempt_minutes for item in items),
-                    sum(item.late_grace_minutes for item in items),
-                    sum(item.late_chargeable_minutes for item in items),
-                ]
-            )
+            minutes = sum(item.overtime_minutes for item in items)
+            row = [
+                name, user_id, _summary_status(blocking_issue_count, supplement_count, review_count),
+                blocking_issue_count, supplement_count, review_count, sum(item.has_overtime for item in items),
+                minutes, round(minutes / 60, 2), sum(item.late_minutes > 0 for item in items),
+                sum(item.late_minutes for item in items), sum(item.late_leave_exempt_minutes for item in items),
+                sum(item.late_grace_minutes for item in items), sum(item.late_chargeable_minutes for item in items),
+            ]
+            sheet.append(row)
+            if supplement_count:
+                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
         _style_header(sheet)
+        sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
     def _write_daily_summary(
         self, sheet, results: list[OvertimeResult], input_issues: list[InputIssue]
@@ -180,245 +230,134 @@ class OvertimeReportWriter:
         grouped: dict[date, list[OvertimeResult]] = defaultdict(list)
         for result in results:
             grouped[result.work_date].append(result)
-        input_issue_counts = _input_issue_counts_by_date(input_issues)
-
-        sheet.append(
-            [
-                "日期",
-                "统计状态",
-                "阻断输入条数",
-                "待补卡人数",
-                "待审核人数",
-                "加班人数",
-                "暂计加班分钟",
-                "暂计加班小时",
-                "迟到人数",
-                "迟到分钟",
-                "请假抵扣迟到分钟",
-                "宽限迟到分钟",
-                "扣款迟到分钟",
-            ]
-        )
+        sheet.append([
+            "日期", "统计状态", "人工确认条数", "阻断输入条数", "漏卡人数", "待审核人数",
+            "加班人数", "加班分钟", "加班小时", "工作日加班分钟", "休息日加班分钟", "节假日加班分钟",
+            "请假有效分钟", "扣工资请假分钟", "原始迟到分钟", "请假抵扣迟到分钟", "宽限迟到分钟", "扣工资迟到分钟",
+        ])
         for work_date, items in sorted(grouped.items()):
+            all_issues = [item for item in input_issues if item.work_date == work_date]
+            blocking = sum(item.blocks_summary for item in all_issues)
+            supplement = sum(_supplement_punch_issue(item, self._config) is not None for item in items)
+            reviews = sum(_needs_review(item) for item in items)
             minutes = sum(item.overtime_minutes for item in items)
-            input_issue_count = input_issue_counts[work_date]
-            supplement_count = sum(
-                _supplement_punch_issue(item, self._config) is not None for item in items
-            )
-            review_count = sum(_needs_review(item) for item in items)
-            sheet.append(
-                [
-                    work_date,
-                    _summary_status(input_issue_count, supplement_count, review_count),
-                    input_issue_count,
-                    supplement_count,
-                    review_count,
-                    sum(1 for item in items if item.has_overtime),
-                    minutes,
-                    round(minutes / 60, 2),
-                    sum(1 for item in items if item.late_minutes > 0),
-                    sum(item.late_minutes for item in items),
-                    sum(item.late_leave_exempt_minutes for item in items),
-                    sum(item.late_grace_minutes for item in items),
-                    sum(item.late_chargeable_minutes for item in items),
-                ]
-            )
+            status = _summary_status(blocking, supplement, reviews)
+            if not blocking and all_issues:
+                status = "有效（有待确认项）"
+            sheet.append([
+                work_date, status, len(all_issues), blocking, supplement, reviews,
+                sum(item.has_overtime for item in items), minutes, round(minutes / 60, 2),
+                sum(item.overtime_minutes for item in items if item.overtime_type == "工作日"),
+                sum(item.overtime_minutes for item in items if item.overtime_type == "休息日"),
+                sum(item.overtime_minutes for item in items if item.overtime_type == "节假日"),
+                sum(item.leave_work_minutes for item in items), sum(item.leave_deductible_minutes for item in items),
+                sum(item.late_minutes for item in items), sum(item.late_leave_exempt_minutes for item in items),
+                sum(item.late_grace_minutes for item in items), sum(item.late_chargeable_minutes for item in items),
+            ])
+            if supplement:
+                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+            elif reviews:
+                _mark_cells(sheet[sheet.max_row], {1, 4}, AMBER_FILL, AMBER_FONT)
+            elif all_issues:
+                _mark_cells(sheet[sheet.max_row], {1, 2}, YELLOW_FILL, None)
         _style_header(sheet)
-        for row in sheet.iter_rows(min_row=2, min_col=1, max_col=1):
-            row[0].number_format = "yyyy-mm-dd"
+        sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
     def _write_supplement_punch_notifications(self, sheet, results: list[OvertimeResult]) -> None:
         sheet.append(["姓名", "UserId", "日期", "班次", "需补打卡", "原因", "关联审批单", "建议通知"])
-
         notification_count = 0
         for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
             issue = _supplement_punch_issue(result, self._config)
             if issue is None:
                 continue
-
             missing_type, reason = issue
-            sheet.append(
-                [
-                    result.employee_name,
-                    result.user_id,
-                    result.work_date,
-                    result.shift,
-                    missing_type,
-                    reason,
-                    result.approval_text,
-                    f"请补齐 {result.work_date:%Y-%m-%d} 的{missing_type}；补卡后重新导出考勤并运行本工具。",
-                ]
-            )
+            sheet.append([
+                result.employee_name, result.user_id, result.work_date, result.shift, missing_type,
+                reason, result.approval_text,
+                f"请补齐 {result.work_date:%Y-%m-%d} 的{missing_type}；补卡后重新导出考勤并运行本工具。",
+            ])
+            _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
             notification_count += 1
-
         if notification_count == 0:
             sheet.append(["未发现待补卡记录"])
-
         _style_header(sheet)
-        for row in sheet.iter_rows(min_row=2, min_col=3, max_col=3):
-            row[0].number_format = "yyyy-mm-dd"
+        sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
     def _write_approval_reviews(self, sheet, results: list[OvertimeResult]) -> None:
-        sheet.append(
-            [
-                "姓名",
-                "UserId",
-                "日期",
-                "加班类型",
-                "审核类型",
-                "实际首个打卡",
-                "实际最后打卡",
-                "暂计加班分钟",
-                "请假审批分钟",
-                "审批加班分钟",
-                "差异(分钟)",
-                "容差(分钟)",
-                "关联审批单",
-                "审核原因",
-                "需通知HR",
-            ]
-        )
-
+        sheet.append([
+            "姓名", "UserId", "日期", "加班类型", "审核类型", "实际首个打卡", "实际最后打卡",
+            "实际加班分钟", "请假有效分钟", "请假重叠分钟", "审批加班分钟", "差异(分钟)",
+            "容差(分钟)", "关联审批单", "审核原因", "需通知HR",
+        ])
         review_count = 0
         for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
             if not _needs_review(result):
                 continue
-            sheet.append(
-                [
-                    result.employee_name,
-                    result.user_id,
-                    result.work_date,
-                    result.overtime_type,
-                    _review_type(result),
-                    fmt_dt(result.first_clock_in),
-                    fmt_dt(result.last_clock_out),
-                    result.overtime_minutes,
-                    result.approved_leave_minutes,
-                    result.approval_overtime_minutes,
-                    result.approval_difference_minutes,
-                    self._config.rest_day.approval_difference_tolerance_minutes,
-                    result.approval_text,
-                    _review_reason(result),
-                    "是",
-                ]
-            )
+            sheet.append([
+                result.employee_name, result.user_id, result.work_date, result.overtime_type,
+                _review_type(result), fmt_dt(result.first_clock_in), fmt_dt(result.last_clock_out),
+                result.overtime_minutes, result.leave_work_minutes, result.leave_overlap_minutes,
+                result.approval_overtime_minutes, result.approval_difference_minutes,
+                self._config.rest_day.approval_difference_tolerance_minutes, result.approval_text,
+                _review_reason(result), "是",
+            ])
+            _mark_row(sheet[sheet.max_row], AMBER_FILL, AMBER_FONT)
             review_count += 1
-
         if review_count == 0:
             sheet.append(["未发现待审核记录"])
-
         _style_header(sheet)
-        for row in sheet.iter_rows(min_row=2, min_col=3, max_col=3):
-            row[0].number_format = "yyyy-mm-dd"
+        sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
-    def _write_anomalies(self, sheet, results: list[OvertimeResult]) -> None:
-        sheet.append(
-            [
-                "异常类型",
-                "姓名",
-                "UserId",
-                "日期",
-                "班次",
-                "上班打卡结果",
-                "下班打卡结果",
-                "原始记录数",
-                "有效原始记录数",
-                "使用每日统计兜底",
-                "关联审批单",
-                "说明",
-            ]
-        )
-
+    def _write_anomalies(self, sheet, results: list[OvertimeResult], input_issues: list[InputIssue]) -> None:
+        sheet.append([
+            "异常类型", "姓名", "UserId", "日期", "班次", "上班打卡结果", "下班打卡结果",
+            "原始记录数", "有效原始记录数", "使用每日统计兜底", "关联审批单", "说明",
+        ])
         anomaly_count = 0
         for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
             for anomaly_type, message in _anomalies_for(result, self._config):
-                sheet.append(
-                    [
-                        anomaly_type,
-                        result.employee_name,
-                        result.user_id,
-                        result.work_date,
-                        result.shift,
-                        result.start_result,
-                        result.end_result,
-                        result.raw_punch_count,
-                        result.valid_raw_punch_count,
-                        "是" if result.used_daily_fallback else "",
-                        result.approval_text,
-                        message,
-                    ]
-                )
+                sheet.append([
+                    anomaly_type, result.employee_name, result.user_id, result.work_date, result.shift,
+                    result.start_result, result.end_result, result.raw_punch_count, result.valid_raw_punch_count,
+                    "是" if result.used_daily_fallback else "", result.approval_text, message,
+                ])
+                if "补卡" in anomaly_type or "缺卡" in anomaly_type:
+                    _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+                else:
+                    _mark_row(sheet[sheet.max_row], AMBER_FILL, AMBER_FONT)
                 anomaly_count += 1
-
         if anomaly_count == 0:
             sheet.append(["未发现异常数据"])
-
         _style_header(sheet)
-        for row in sheet.iter_rows(min_row=2, min_col=4, max_col=4):
-            row[0].number_format = "yyyy-mm-dd"
+        sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
     def _write_input_issues(self, sheet, input_issues: list[InputIssue]) -> None:
-        sheet.append(
-            [
-                "来源工作表",
-                "源行号",
-                "姓名",
-                "UserId",
-                "考勤日期",
-                "字段",
-                "原始值",
-                "问题",
-                "对统计的影响",
-                "建议处理",
-                "问题类型",
-                "阻断自动汇总",
-                "HR选择",
-                "HR处理说明",
-            ]
-        )
-
+        sheet.append([
+            "来源工作表", "源行号", "姓名", "UserId", "考勤日期", "字段", "原始值", "问题",
+            "对统计的影响", "建议处理", "问题类型", "阻断自动汇总", "HR选择", "HR处理说明",
+        ])
         for issue in input_issues:
-            sheet.append(
-                [
-                    issue.source_sheet,
-                    issue.source_row,
-                    issue.employee_name,
-                    issue.user_id,
-                    issue.work_date,
-                    issue.field_name,
-                    issue.raw_value,
-                    issue.message,
-                    issue.impact,
-                    issue.suggested_action,
-                    issue.issue_type,
-                    "是" if issue.blocks_summary else "否",
-                    "",
-                    "",
-                ]
-            )
-
+            sheet.append([
+                issue.source_sheet, issue.source_row, issue.employee_name, issue.user_id, issue.work_date,
+                issue.field_name, issue.raw_value, issue.message, issue.impact, issue.suggested_action,
+                issue.issue_type, "是" if issue.blocks_summary else "否", "", "",
+            ])
+            _mark_row(sheet[sheet.max_row], YELLOW_FILL, None)
         if not input_issues:
             sheet.append(["未发现需要人工确认的输入数据"])
         else:
             choice_validation = DataValidation(
-                type="list",
-                formula1='"更正源数据后重跑,确认排除本行,人工核定后重跑"',
-                allow_blank=True,
+                type="list", formula1='"更正源数据后重跑,确认排除本行,人工核定后重跑"', allow_blank=True
             )
             sheet.add_data_validation(choice_validation)
             choice_validation.add(f"M2:M{len(input_issues) + 1}")
-
         _style_header(sheet)
         sheet.auto_filter.ref = f"A1:N{sheet.max_row}"
         for row in sheet.iter_rows(min_row=2, min_col=7, max_col=14):
             for cell in row:
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
-        for row in sheet.iter_rows(min_row=2, min_col=5, max_col=5):
-            row[0].number_format = "yyyy-mm-dd"
 
-    def _write_config(
-        self, sheet, output_path: Path, input_issues: list[InputIssue]
-    ) -> None:
+    def _write_config(self, sheet, output_path: Path, input_issues: list[InputIssue]) -> None:
         workday = self._config.workday
         overtime = self._config.overtime
         rest_day = self._config.rest_day
@@ -428,6 +367,7 @@ class OvertimeReportWriter:
             ("其中阻断自动汇总条数", sum(issue.blocks_summary for issue in input_issues)),
             ("待人工确认处理", "不参与自动猜测；在待人工确认填写 HR 选择后修正源数据并重跑"),
             ("待人工确认 HR选择", "更正源数据后重跑 / 确认排除本行 / 人工核定后重跑"),
+            ("输出结构", "总览 → 每位员工整月明细 → 待补卡/待审核/待人工确认/异常/配置"),
             ("弹性上班开始", workday.flex_start_begin.strftime("%H:%M")),
             ("弹性上班结束", workday.flex_start_end.strftime("%H:%M")),
             ("10:00后下班规则", "固定 19:00，不因迟到顺延"),
@@ -437,10 +377,12 @@ class OvertimeReportWriter:
             ("迟到分钟宽限上限(月)", workday.late_grace_minutes_per_month),
             ("是否统计非工作日加班", str(workday.count_non_workday_overtime)),
             ("休息班次关键字", "、".join(workday.rest_shift_keywords)),
-            ("缺卡处理", "缺少成对有效打卡时不计入；员工汇总标为待补卡"),
-            ("请假处理", "请假等审批区间抵扣对应迟到；同日有加班时暂计并交 HR 审核"),
+            ("缺卡处理", "缺少成对有效打卡时不计入加班；明细整行标红并生成待补卡通知"),
+            ("请假处理", "按审批起止时间精确到分钟；有效分钟扣除固定午休；同日加班交 HR 审核"),
+            ("不扣工资请假类型", "年假、调休"),
+            ("其他请假类型", "默认计入扣工资请假分钟；未知类型保留并标出"),
             (
-                "非工作日固定午休",
+                "固定午休",
                 f"{rest_day.fixed_lunch_start:%H:%M}-"
                 f"{(datetime.combine(date.min, rest_day.fixed_lunch_start) + timedelta(minutes=rest_day.fixed_lunch_minutes)):%H:%M}",
             ),
@@ -454,33 +396,282 @@ class OvertimeReportWriter:
             ("取整单位分钟", overtime.rounding_unit_minutes),
             ("取整方式", overtime.rounding_mode),
             ("无效打卡前缀", "、".join(overtime.invalid_punch_prefixes)),
+            ("跨午夜归属", "按原始表考勤日期归属前一考勤日"),
+            ("工资金额", "当前仅输出扣工资分钟；未配置时薪/日薪，因此不计算金额"),
         ]
         sheet.append(["配置项", "值"])
         for row in rows:
             sheet.append(list(row))
         _style_header(sheet)
+        sheet.auto_filter.ref = f"A1:B{sheet.max_row}"
+
+
+def _group_results(results: list[OvertimeResult]) -> dict[tuple[str, str], list[OvertimeResult]]:
+    grouped: dict[tuple[str, str], list[OvertimeResult]] = defaultdict(list)
+    for result in results:
+        grouped[(result.employee_name, result.user_id)].append(result)
+    return grouped
+
+
+def _period_bounds(results: list[OvertimeResult]) -> tuple[date | None, date | None]:
+    if not results:
+        return None, None
+    return min(item.work_date for item in results), max(item.work_date for item in results)
+
+
+def _period_text(start: date | None, end: date | None) -> str:
+    if start is None or end is None:
+        return ""
+    return f"{start:%Y-%m}" if start.year == end.year and start.month == end.month else f"{start:%Y-%m-%d}至{end:%Y-%m-%d}"
+
+
+def _date_range(start: date, end: date) -> list[date]:
+    return [start + timedelta(days=offset) for offset in range((end - start).days + 1)]
+
+
+def _unique_sheet_name(name: str, used: set[str], index: int) -> str:
+    safe = INVALID_SHEET_CHARS.sub("_", str(name).strip()).strip() or f"员工{index}"
+    safe = safe[:31]
+    candidate = safe
+    suffix = 2
+    while candidate in used:
+        tail = f"_{suffix}"
+        candidate = f"{safe[:31 - len(tail)]}{tail}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def _leave_types(groups: object) -> list[str]:
+    found: set[str] = set()
+    for group in groups:
+        for result in group:
+            found.update(result.leave_minutes_by_type)
+    ordered = [kind for kind in KNOWN_LEAVE_TYPES if kind in found]
+    ordered.extend(sorted(found - set(ordered)))
+    return ordered
+
+
+def _person_issue_counts(input_issues: list[InputIssue], employee_name: str, user_id: str) -> tuple[int, int]:
+    matched = [
+        issue for issue in input_issues
+        if issue.employee_name == employee_name
+        and (not issue.user_id or not user_id or issue.user_id == user_id)
+    ]
+    return len(matched), sum(issue.blocks_summary for issue in matched)
+
+
+def _issues_for_day(input_issues: list[InputIssue], employee_name: str, user_id: str, work_date: date) -> list[InputIssue]:
+    return [
+        issue for issue in input_issues
+        if issue.employee_name == employee_name
+        and (not issue.user_id or not user_id or issue.user_id == user_id)
+        and issue.work_date == work_date
+    ]
+
+
+def _overview_row(
+    name: str,
+    user_id: str,
+    period_text: str,
+    items: list[OvertimeResult],
+    all_issue_count: int,
+    blocking_issue_count: int,
+    config: AppConfig,
+    leave_types: list[str],
+) -> list[object]:
+    minutes = sum(item.overtime_minutes for item in items)
+    supplement_count = sum(_supplement_punch_issue(item, config) is not None for item in items)
+    review_count = sum(_needs_review(item) for item in items)
+    anomaly_dates = {
+        item.work_date for item in items
+        if _anomalies_for(item, config) or _supplement_punch_issue(item, config) is not None
+    }
+    type_minutes = {kind: sum(item.leave_minutes_by_type.get(kind, 0) for item in items) for kind in leave_types}
+    effective_leave = sum(item.leave_work_minutes for item in items)
+    known_minutes = sum(type_minutes.values())
+    other_leave = max(effective_leave - known_minutes, 0)
+    return [
+        name, user_id, period_text,
+        _overview_status(blocking_issue_count, supplement_count, review_count, all_issue_count),
+        len(items), sum(item.punch_pair_complete for item in items),
+        sum(item.has_overtime for item in items), minutes, round(minutes / 60, 2),
+        sum(item.overtime_minutes for item in items if item.overtime_type == "工作日"),
+        sum(item.overtime_minutes for item in items if item.overtime_type == "休息日"),
+        sum(item.overtime_minutes for item in items if item.overtime_type == "节假日"),
+        sum(item.overtime_minutes for item in items if _needs_review(item)), supplement_count,
+        sum(item.approved_leave_minutes for item in items), effective_leave,
+        *[type_minutes[kind] for kind in leave_types], other_leave,
+        sum(item.leave_non_deductible_minutes for item in items),
+        sum(item.leave_deductible_minutes for item in items), sum(item.leave_overlap_minutes for item in items),
+        sum(item.late_minutes > 0 for item in items), sum(item.late_minutes for item in items),
+        sum(item.late_leave_exempt_minutes for item in items), sum(item.late_grace_minutes for item in items),
+        sum(item.late_chargeable_minutes > 0 for item in items), sum(item.late_chargeable_minutes for item in items),
+        review_count, len(anomaly_dates), all_issue_count, blocking_issue_count,
+        "待处理" if all_issue_count else "无",
+        sum(bool(item.approved_leave_minutes and item.overtime_minutes) for item in items),
+    ]
+
+
+def _employee_detail_row(
+    result: OvertimeResult | None,
+    work_date: date,
+    day_issues: list[InputIssue],
+    config: AppConfig,
+    leave_types: list[str],
+) -> list[object]:
+    if result is None:
+        day_type = _calendar_day_type(work_date, config)
+        return [
+            work_date, _weekday_text(work_date), "", day_type, "", "", "", "", "", "", "否", "",
+            0, 0, "", "", "", "", 0, 0, 0, 0, 0, "未找到该日期的每日统计记录。", "", "", 0, 0,
+            *([0] * len(leave_types)), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", "", "", "",
+            "缺少每日统计记录", len(day_issues), "待处理" if day_issues else "无", "缺少每日统计记录",
+            "缺少每日统计记录", "",
+        ]
+
+    issue_count = len(day_issues)
+    supplement = _supplement_punch_issue(result, config)
+    anomaly_types = [kind for kind, _ in _anomalies_for(result, config)]
+    if issue_count:
+        anomaly_types.append("待人工确认")
+    anomaly_status = "、".join(dict.fromkeys(anomaly_types)) or "正常"
+    leave_types_text = "、".join(sorted(result.leave_minutes_by_type))
+    known_minutes = sum(result.leave_minutes_by_type.get(kind, 0) for kind in leave_types)
+    other_leave = max(result.leave_work_minutes - known_minutes, 0)
+    cross_midnight = "是" if result.last_clock_out and result.last_clock_out.date() != result.work_date else "否"
+    return [
+        result.work_date, _weekday_text(result.work_date), result.shift, result.overtime_type,
+        result.start_time_text, result.start_result, result.end_time_text, result.end_result,
+        fmt_dt(result.first_clock_in), fmt_dt(result.last_clock_out),
+        "是" if result.punch_pair_complete else "否", cross_midnight,
+        result.raw_punch_count, result.valid_raw_punch_count, "是" if result.used_daily_fallback else "否",
+        result.source_row, fmt_time(result.overtime_start), fmt_time(result.overtime_end),
+        result.raw_overtime_minutes, result.lunch_break_minutes, result.dinner_break_minutes,
+        result.overtime_minutes, result.overtime_hours, _calculation_text(result), result.approval_text,
+        leave_types_text, result.approved_leave_minutes, result.leave_work_minutes,
+        *[result.leave_minutes_by_type.get(kind, 0) for kind in leave_types], other_leave,
+        result.leave_non_deductible_minutes, result.leave_deductible_minutes, result.leave_overlap_minutes,
+        result.late_raw_minutes, result.late_leave_exempt_minutes, result.late_minutes,
+        result.late_occurrence_number, result.late_grace_minutes, result.late_chargeable_minutes,
+        result.late_status, result.approval_overtime_minutes, result.approval_difference_minutes,
+        _approval_status(result), supplement[0] if supplement else "", issue_count,
+        "待处理" if issue_count else "无", anomaly_status, _calculation_status(result, config),
+        "；".join(result.notes),
+    ]
+
+
+def _legacy_detail_row(result: OvertimeResult, config: AppConfig) -> list[object]:
+    return [
+        result.employee_name, result.user_id, result.work_date, result.shift, result.overtime_type,
+        fmt_dt(result.first_clock_in), fmt_dt(result.last_clock_out), fmt_time(result.standard_end),
+        result.lunch_break_minutes, result.dinner_break_minutes, fmt_time(result.overtime_start),
+        fmt_time(result.overtime_end), result.raw_overtime_minutes, result.overtime_minutes,
+        result.overtime_hours, result.approval_text, result.approved_leave_minutes, result.leave_work_minutes,
+        "、".join(sorted(result.leave_minutes_by_type)), result.leave_non_deductible_minutes,
+        result.leave_deductible_minutes, result.leave_overlap_minutes, result.approval_overtime_minutes,
+        result.approval_difference_minutes, _approval_status(result), result.late_raw_minutes,
+        result.late_leave_exempt_minutes, result.late_minutes, result.late_occurrence_number,
+        result.late_grace_minutes, result.late_chargeable_minutes, result.late_status,
+        _calculation_status(result, config), "；".join(result.notes), _calculation_text(result),
+    ]
+
+
+def _weekday_text(value: date) -> str:
+    return ("一", "二", "三", "四", "五", "六", "日")[value.weekday()]
+
+
+def _calendar_day_type(value: date, config: AppConfig) -> str:
+    if value in config.rest_day.holiday_dates:
+        return "节假日"
+    return "休息日" if value.weekday() >= 5 else "工作日"
+
+
+def _overview_status(blocking_issue_count: int, supplement_count: int, review_count: int, all_issue_count: int) -> str:
+    if blocking_issue_count:
+        return "待人工确认，汇总未生效"
+    if supplement_count:
+        return "待补卡，相关日不计入"
+    if review_count:
+        return "待审核，暂计"
+    if all_issue_count:
+        return "有效（有待确认项）"
+    return "有效"
+
+
+def _summary_status(input_issue_count: int, supplement_count: int, review_count: int) -> str:
+    if input_issue_count:
+        return "待人工确认，汇总未生效"
+    if supplement_count:
+        return "待补卡，汇总未生效"
+    if review_count:
+        return "待审核，汇总未生效"
+    return "有效"
 
 
 def _style_header(sheet) -> None:
-    fill = PatternFill("solid", fgColor="1F4E78")
     for cell in sheet[1]:
-        cell.fill = fill
+        cell.fill = HEADER_FILL
         cell.font = Font(color="FFFFFF", bold=True)
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    sheet.row_dimensions[1].height = 30
+        cell.border = Border(bottom=Side(style="medium", color="17365D"))
+    sheet.row_dimensions[1].height = 34
 
 
-def _freeze_and_autofit(sheet) -> None:
-    sheet.freeze_panes = "A2"
+def _mark_row(row, fill: PatternFill, font: Font | None) -> None:
+    for cell in row:
+        cell.fill = fill
+        if font is not None:
+            cell.font = font
+
+
+def _mark_cells(row, indexes: set[int], fill: PatternFill, font: Font | None) -> None:
+    for index in indexes:
+        if 0 <= index < len(row):
+            row[index].fill = fill
+            if font is not None:
+                row[index].font = font
+
+
+def _finish_sheet(sheet) -> None:
+    sheet.sheet_view.showGridLines = False
+    if sheet.title == "总览":
+        sheet.freeze_panes = "D2"
+    elif sheet.title in {"待人工确认", "配置"}:
+        sheet.freeze_panes = "A2"
+    else:
+        sheet.freeze_panes = "E2" if sheet.max_column > 25 else "A2"
+
+    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+        for cell in row:
+            cell.border = GRID_BORDER
+            if isinstance(cell.value, str) and len(cell.value) > 24:
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    header_by_col = {cell.column: str(cell.value) for cell in sheet[1]}
     for column_cells in sheet.columns:
-        max_length = 0
         column_letter = get_column_letter(column_cells[0].column)
-        for cell in column_cells:
-            value = cell.value
-            if value is None:
-                continue
-            max_length = max(max_length, len(str(value)))
-        sheet.column_dimensions[column_letter].width = min(max(max_length + 2, 10), 40)
+        header = header_by_col.get(column_cells[0].column, "")
+        max_length = max((len(str(cell.value)) for cell in column_cells if cell.value is not None), default=8)
+        if header in {"关联审批单", "加班计算说明", "计算说明", "备注", "问题", "对统计的影响", "建议处理", "审核原因", "HR处理说明"}:
+            width = 34
+        elif "状态" in header or header in {"统计期间", "异常状态", "请假类型", "漏卡", "人工确认状态"}:
+            width = 20
+        elif header == "UserId":
+            width = 24
+        elif "分钟" in header or "次数" in header or "天数" in header or "记录数" in header:
+            width = 14
+        else:
+            width = min(max(max_length + 2, 10), 22)
+        sheet.column_dimensions[column_letter].width = min(max(width, 10), 42)
+
+    for cell in sheet[1]:
+        if cell.value == "UserId":
+            for row in range(2, sheet.max_row + 1):
+                sheet.cell(row, cell.column).number_format = "@"
+        if cell.value in {"日期", "考勤日期"}:
+            for row in range(2, sheet.max_row + 1):
+                sheet.cell(row, cell.column).number_format = "yyyy-mm-dd"
 
     if sheet.title == "待人工确认":
         sheet.column_dimensions["M"].width = 24
@@ -488,52 +679,31 @@ def _freeze_and_autofit(sheet) -> None:
         for row in range(2, sheet.max_row + 1):
             sheet.row_dimensions[row].height = 48
 
-    for cell in sheet[1]:
-        if cell.value == "UserId":
-            for row in range(2, sheet.max_row + 1):
-                sheet.cell(row, cell.column).number_format = "@"
-
 
 def _calculation_text(result: OvertimeResult) -> str:
-    if (
-        result.overtime_type != "工作日"
-        and result.first_clock_in is not None
-        and result.last_clock_out is not None
-    ):
-        deduction_text = f"固定午休扣除 {result.lunch_break_minutes} 分钟"
+    leave_text = _leave_calculation_text(result)
+    if result.overtime_type != "工作日" and result.first_clock_in and result.last_clock_out:
+        deduction = f"固定午休扣除 {result.lunch_break_minutes} 分钟"
         if result.dinner_break_minutes:
-            deduction_text += f"，晚餐扣除 {result.dinner_break_minutes} 分钟"
-        return (
-            f"{result.overtime_type}首个有效打卡 {fmt_time(result.first_clock_in)}，"
-            f"最后有效打卡 {fmt_time(result.last_clock_out)}；{deduction_text}；"
-            f"计入 {result.overtime_minutes} 分钟{_leave_calculation_text(result)}。"
-        )
-
+            deduction += f"，晚餐扣除 {result.dinner_break_minutes} 分钟"
+        return f"{result.overtime_type}首个有效打卡 {fmt_time(result.first_clock_in)}，最后有效打卡 {fmt_time(result.last_clock_out)}；{deduction}；计入 {result.overtime_minutes} 分钟{leave_text}。"
     if result.first_clock_in is None or result.last_clock_out is None or result.standard_end is None:
         notes = "；".join(result.notes) or "缺少有效上下班打卡"
-        return f"未计算：{notes}{_leave_calculation_text(result)}。"
-
-    late_text = _leave_calculation_text(result)
+        return f"未计算：{notes}{leave_text}。"
+    late_text = ""
     if result.late_minutes:
-        late_text = (
-            f"；迟到 {result.late_minutes} 分钟，宽限 {result.late_grace_minutes} 分钟，"
-            f"扣款 {result.late_chargeable_minutes} 分钟"
-            f"{_leave_calculation_text(result)}"
-        )
-    return (
-        f"首个有效打卡 {fmt_time(result.first_clock_in)}，弹性下班 {fmt_time(result.standard_end)}；"
-        f"晚餐扣除 {result.dinner_break_minutes} 分钟后 {fmt_time(result.overtime_start)} 开始算加班；"
-        f"最后有效打卡 {fmt_time(result.last_clock_out)}；"
-        f"计入 {result.overtime_minutes} 分钟{late_text}。"
-    )
+        late_text = f"；规则后迟到 {result.late_minutes} 分钟，宽限 {result.late_grace_minutes} 分钟，扣工资 {result.late_chargeable_minutes} 分钟"
+    return f"首个有效打卡 {fmt_time(result.first_clock_in)}，弹性下班 {fmt_time(result.standard_end)}；晚餐扣除 {result.dinner_break_minutes} 分钟后 {fmt_time(result.overtime_start)} 开始算加班；最后有效打卡 {fmt_time(result.last_clock_out)}；计入 {result.overtime_minutes} 分钟{late_text}{leave_text}。"
 
 
 def _leave_calculation_text(result: OvertimeResult) -> str:
     if not result.approved_leave_minutes:
         return ""
-    text = f"；请假/授权审批区间覆盖当日 {result.approved_leave_minutes} 分钟（非计薪时长）"
+    text = f"；请假审批区间覆盖 {result.approved_leave_minutes} 分钟，扣午休后有效 {result.leave_work_minutes} 分钟"
     if result.late_leave_exempt_minutes:
         text += f"，抵扣迟到 {result.late_leave_exempt_minutes} 分钟"
+    if result.leave_overlap_minutes:
+        text += f"，重叠 {result.leave_overlap_minutes} 分钟待 HR 确认"
     return text
 
 
@@ -541,13 +711,10 @@ def _anomalies_for(result: OvertimeResult, config: AppConfig) -> list[tuple[str,
     anomalies: list[tuple[str, str]] = []
     start_missing = not result.start_time_text and bool(result.end_time_text)
     end_missing = bool(result.start_time_text) and not result.end_time_text
-    approved_non_punch = _has_approved_non_punch_reason(result)
+    approved_non_punch = _has_approved_non_punch_reason(result, config)
     supplement_issue = _supplement_punch_issue(result, config)
-
     if supplement_issue is not None:
-        _, message = supplement_issue
-        anomalies.append(("待补卡", message))
-
+        anomalies.append(("待补卡", supplement_issue[1]))
     if start_missing and not approved_non_punch:
         anomalies.append(("有下班无上班", "每日统计中缺少上班打卡时间，但存在下班打卡时间。"))
     if end_missing and not approved_non_punch:
@@ -564,42 +731,36 @@ def _anomalies_for(result: OvertimeResult, config: AppConfig) -> list[tuple[str,
         anomalies.append(("非工作日有打卡但未统计", "当天为非工作日，配置为不统计非工作日加班。"))
     has_any_attendance_signal = bool(result.start_time_text or result.end_time_text or result.raw_punch_count)
     should_expect_punch_pair = bool(result.shift.strip()) and not _is_rest_day(result, config)
-    if (
-        any(note == "有效上下班打卡不足" for note in result.notes)
-        and (has_any_attendance_signal or should_expect_punch_pair)
-        and not approved_non_punch
-        and supplement_issue is None
-    ):
+    if any(note == "有效上下班打卡不足" for note in result.notes) and (has_any_attendance_signal or should_expect_punch_pair) and not approved_non_punch and supplement_issue is None:
         anomalies.append(("有效上下班打卡不足", "无法从原始记录或每日统计中得到成对的有效上下班打卡。"))
-
+    if result.leave_overlap_minutes:
+        anomalies.append(("请假类型重叠", f"不同请假类型重叠 {result.leave_overlap_minutes} 分钟：{result.leave_overlap_types}。"))
     return anomalies
 
 
-def _has_approved_non_punch_reason(result: OvertimeResult) -> bool:
+def _has_approved_non_punch_reason(result: OvertimeResult, config: AppConfig) -> bool:
+    if result.approved_leave_minutes and result.leave_work_minutes >= config.workday.work_minutes:
+        if result.first_clock_in is None and result.last_clock_out is None:
+            return True
     if not result.approval_text:
         return False
-
-    approval_keywords = ("请假", "年假", "事假", "病假", "婚假", "调休", "外出", "出差")
-    result_keywords = ("请假", "年假", "事假", "病假", "婚假", "调休", "外出", "出差")
-    has_approval = any(keyword in result.approval_text for keyword in approval_keywords)
-    has_non_punch_result = any(keyword in result.start_result or keyword in result.end_result for keyword in result_keywords)
-    return has_approval and has_non_punch_result
+    keywords = ("请假", "年假", "事假", "病假", "婚假", "调休", "外出", "出差")
+    return any(keyword in result.approval_text for keyword in keywords) and any(
+        keyword in result.start_result or keyword in result.end_result for keyword in keywords
+    )
 
 
 def _supplement_punch_issue(result: OvertimeResult, config: AppConfig) -> tuple[str, str] | None:
-    if result.punch_pair_complete or _has_approved_non_punch_reason(result):
+    if result.punch_pair_complete or _has_approved_non_punch_reason(result, config):
         return None
-
     if not _requires_punch_pair(result, config):
         return None
-
     if not result.start_time_text and result.end_time_text:
         missing_type = "上班打卡"
     elif result.start_time_text and not result.end_time_text:
         missing_type = "下班打卡"
     else:
         missing_type = "上班和下班打卡"
-
     return missing_type, "缺少成对有效打卡，当天加班不计入，补卡后需重新统计。"
 
 
@@ -608,12 +769,7 @@ def _requires_punch_pair(result: OvertimeResult, config: AppConfig) -> bool:
         return False
     if not _is_rest_day(result, config):
         return True
-    return bool(
-        result.raw_punch_count
-        or result.start_time_text
-        or result.end_time_text
-        or "加班" in result.approval_text
-    )
+    return bool(result.raw_punch_count or result.start_time_text or result.end_time_text or "加班" in result.approval_text)
 
 
 def _calculation_status(result: OvertimeResult, config: AppConfig) -> str:
@@ -636,16 +792,6 @@ def _approval_status(result: OvertimeResult) -> str:
     return ""
 
 
-def _summary_status(input_issue_count: int, supplement_count: int, review_count: int) -> str:
-    if input_issue_count:
-        return "待人工确认，汇总未生效"
-    if supplement_count:
-        return "待补卡，汇总未生效"
-    if review_count:
-        return "待审核，汇总未生效"
-    return "有效"
-
-
 def _needs_review(result: OvertimeResult) -> bool:
     return bool(result.approval_review_reason or result.leave_review_reason)
 
@@ -655,30 +801,18 @@ def _review_type(result: OvertimeResult) -> str:
     if result.approval_review_reason:
         types.append("加班审批差异")
     if result.leave_review_reason:
-        types.append("请假与加班并存")
+        types.append("请假与加班/类型重叠")
     return "、".join(types)
 
 
 def _review_reason(result: OvertimeResult) -> str:
-    return "；".join(
-        reason for reason in (result.approval_review_reason, result.leave_review_reason) if reason
-    )
+    return "；".join(reason for reason in (result.approval_review_reason, result.leave_review_reason) if reason)
 
 
-def _input_issue_counts_by_employee(
-    input_issues: list[InputIssue],
-) -> defaultdict[tuple[str, str], int]:
-    counts: defaultdict[tuple[str, str], int] = defaultdict(int)
+def _input_issue_counts_by_date(input_issues: list[InputIssue]) -> Counter:
+    counts: Counter = Counter()
     for issue in input_issues:
-        if issue.employee_name and issue.blocks_summary:
-            counts[(issue.employee_name, issue.user_id)] += 1
-    return counts
-
-
-def _input_issue_counts_by_date(input_issues: list[InputIssue]) -> defaultdict[date, int]:
-    counts: defaultdict[date, int] = defaultdict(int)
-    for issue in input_issues:
-        if issue.work_date is not None and issue.blocks_summary:
+        if issue.work_date is not None:
             counts[issue.work_date] += 1
     return counts
 
@@ -688,8 +822,4 @@ def _is_rest_day(result: OvertimeResult, config: AppConfig) -> bool:
 
 
 def _is_non_workday(result: OvertimeResult, config: AppConfig) -> bool:
-    return (
-        result.overtime_type != "工作日"
-        or _is_rest_day(result, config)
-        or result.work_date in config.rest_day.holiday_dates
-    )
+    return result.overtime_type != "工作日" or _is_rest_day(result, config) or result.work_date in config.rest_day.holiday_dates

@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 
 from .approval import (
+    LeaveApprovalInterval,
     interval_union_minutes,
     overlapping_interval_minutes,
     parse_leave_approval_intervals,
@@ -180,13 +181,18 @@ class OvertimeRule:
         paid_minutes = self._effective_leave_minutes(day_start, day_end, paid_intervals)
         overlap_minutes = max(non_paid_minutes + paid_minutes - effective_total, 0)
         overlap_types: set[str] = set()
-        for left_index, left in enumerate(non_paid_intervals):
+        for left in non_paid_intervals:
             for right in paid_intervals:
                 overlap_start = max(left.start, right.start, day_start)
                 overlap_end = min(left.end, right.end, day_end)
-                if self._effective_leave_minutes(
-                    day_start, day_end, [left.__class__(**{**left.__dict__, "start": overlap_start, "end": overlap_end})]
-                ):
+                if overlap_end <= overlap_start:
+                    continue
+                overlap_interval = LeaveApprovalInterval(
+                    kind=f"{left.kind}/{right.kind}",
+                    start=overlap_start,
+                    end=overlap_end,
+                )
+                if self._effective_leave_minutes(day_start, day_end, [overlap_interval]):
                     overlap_types.add(f"{left.kind}/{right.kind}")
 
         return {
@@ -202,12 +208,10 @@ class OvertimeRule:
         if not intervals:
             return 0
         clipped = [
-            interval.__class__(
-                **{
-                    **interval.__dict__,
-                    "start": max(interval.start, day_start),
-                    "end": min(interval.end, day_end),
-                }
+            LeaveApprovalInterval(
+                kind=interval.kind,
+                start=max(interval.start, day_start),
+                end=min(interval.end, day_end),
             )
             for interval in intervals
             if interval.start < day_end and interval.end > day_start
@@ -291,6 +295,7 @@ class OvertimeRule:
             punch_pair_complete=True,
             overtime_type="工作日",
             late_minutes=late_minutes,
+            source_row=day.source_row,
             notes=notes,
         )
 
@@ -351,6 +356,7 @@ class OvertimeRule:
             overtime_type=overtime_type,
             lunch_break_minutes=lunch_break_minutes,
             late_minutes=late_minutes,
+            source_row=day.source_row,
             notes=notes,
         )
 
@@ -546,5 +552,6 @@ class OvertimeRule:
             punch_pair_complete=punch_pair_complete,
             overtime_type=overtime_type,
             late_minutes=late_minutes,
+            source_row=day.source_row,
             notes=[note],
         )

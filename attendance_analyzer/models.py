@@ -96,6 +96,7 @@ class OvertimeResult:
     leave_deductible_minutes: int = 0
     leave_overlap_minutes: int = 0
     leave_overlap_types: str = ""
+    source_row: int = 0
     notes: list[str] = field(default_factory=list)
 
     @property
