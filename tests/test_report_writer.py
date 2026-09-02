@@ -10,6 +10,26 @@ from attendance_analyzer.models import InputIssue, OvertimeResult
 from attendance_analyzer.report_writer import OvertimeReportWriter, _supplement_punch_issue
 
 
+def _result(work_date: date, **overrides) -> OvertimeResult:
+    values = {
+        "employee_name": "Alice",
+        "user_id": "u1",
+        "work_date": work_date,
+        "shift": "A",
+        "first_clock_in": None,
+        "last_clock_out": None,
+        "standard_end": None,
+        "dinner_break_minutes": 30,
+        "overtime_start": None,
+        "overtime_end": None,
+        "raw_overtime_minutes": 0,
+        "overtime_minutes": 0,
+        "approval_text": "",
+    }
+    values.update(overrides)
+    return OvertimeResult(**values)
+
+
 class OvertimeReportWriterTest(unittest.TestCase):
     def test_sick_leave_does_not_create_missing_punch_notification(self):
         result = OvertimeResult(
@@ -147,6 +167,61 @@ class OvertimeReportWriterTest(unittest.TestCase):
         self.assertEqual(str(validation.sqref), "M2")
         self.assertEqual(summary["C2"].value, "待人工确认，汇总未生效")
         self.assertEqual(summary["D2"].value, 1)
+
+    def test_employee_detail_has_full_month_and_marks_missing_punch_red(self):
+        results = [
+            _result(date(2026, 5, 1)),
+            _result(
+                date(2026, 5, 31),
+                start_time_text="09:00",
+                raw_punch_count=1,
+                valid_raw_punch_count=1,
+                punch_pair_complete=False,
+                notes=["有效上下班打卡不足"],
+            ),
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "result.xlsx"
+            OvertimeReportWriter(AppConfig()).write(output_path, results)
+            workbook = load_workbook(output_path, data_only=True)
+
+        employee = workbook["Alice"]
+        headers = [cell.value for cell in employee[1]]
+        leak_column = headers.index("漏卡") + 1
+        self.assertEqual(employee.max_row, 32)
+        self.assertEqual(employee.cell(2, 1).value.date(), date(2026, 5, 1))
+        self.assertEqual(employee.cell(32, 1).value.date(), date(2026, 5, 31))
+        self.assertEqual(employee.cell(32, leak_column).value, "下班打卡")
+        self.assertEqual(employee.cell(32, 1).fill.fill_type, "solid")
+        self.assertTrue(employee.cell(32, 1).fill.fgColor.rgb.endswith("FFC7CE"))
+
+    def test_overview_exposes_each_late_calculation_stage(self):
+        result = _result(
+            date(2026, 7, 1),
+            late_raw_minutes=45,
+            late_leave_exempt_minutes=5,
+            late_minutes=40,
+            late_occurrence_number=1,
+            late_grace_minutes=30,
+            late_chargeable_minutes=10,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "result.xlsx"
+            OvertimeReportWriter(AppConfig()).write(output_path, [result])
+            workbook = load_workbook(output_path, data_only=True)
+
+        overview = workbook["总览"]
+        values = {cell.value: overview.cell(2, index).value for index, cell in enumerate(overview[1], 1)}
+        self.assertEqual(values["原始迟到次数"], 1)
+        self.assertEqual(values["原始迟到分钟"], 45)
+        self.assertEqual(values["请假抵扣迟到分钟"], 5)
+        self.assertEqual(values["规则后迟到次数"], 1)
+        self.assertEqual(values["规则后迟到分钟"], 40)
+        self.assertEqual(values["宽限迟到分钟"], 30)
+        self.assertEqual(values["扣工资迟到次数"], 1)
+        self.assertEqual(values["扣工资迟到分钟"], 10)
 
 
 if __name__ == "__main__":

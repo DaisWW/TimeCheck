@@ -70,6 +70,46 @@ class OvertimeRuleTest(unittest.TestCase):
         self.assertEqual(result.overtime_minutes, 150)
         self.assertIn("请假与加班是否可同时计薪", result.leave_review_reason)
 
+    def test_leave_minutes_are_split_by_type_and_fixed_lunch_is_removed(self):
+        result = OvertimeRule(AppConfig()).calculate(
+            DailyAttendance(
+                "Alice",
+                "u1",
+                date(2026, 7, 1),
+                "A 09:30-18:30",
+                approval_text=(
+                    "年假07-01 10:00到07-01 13:00 3小时，"
+                    "事假07-01 13:30到07-01 15:00 1.5小时"
+                ),
+            ),
+            [],
+        )
+
+        self.assertEqual(result.approved_leave_minutes, 270)
+        self.assertEqual(result.leave_work_minutes, 210)
+        self.assertEqual(result.leave_minutes_by_type, {"事假": 90, "年假": 120})
+        self.assertEqual(result.leave_non_deductible_minutes, 120)
+        self.assertEqual(result.leave_deductible_minutes, 90)
+
+    def test_overlapping_leave_types_are_reported_for_hr_review(self):
+        result = OvertimeRule(AppConfig()).calculate(
+            DailyAttendance(
+                "Alice",
+                "u1",
+                date(2026, 7, 1),
+                "A 09:30-18:30",
+                approval_text=(
+                    "年假07-01 10:00到07-01 13:00 3小时，"
+                    "事假07-01 11:00到07-01 12:00 1小时"
+                ),
+            ),
+            [],
+        )
+
+        self.assertEqual(result.leave_overlap_minutes, 60)
+        self.assertIn("年假/事假", result.leave_overlap_types)
+        self.assertIn("请 HR 确认", result.leave_review_reason)
+
     def test_lunch_break_is_not_counted_as_late_after_leave(self):
         result = OvertimeRule(AppConfig()).calculate(
             DailyAttendance(

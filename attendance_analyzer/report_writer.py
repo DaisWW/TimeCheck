@@ -104,11 +104,14 @@ class OvertimeReportWriter:
         )
         headers.extend([
             "其他请假分钟", "不扣工资请假分钟", "扣工资请假分钟", "请假重叠分钟",
-            "原始迟到次数", "原始迟到分钟", "请假抵扣迟到分钟", "宽限迟到分钟",
+            "原始迟到次数", "原始迟到分钟", "请假抵扣迟到分钟", "规则后迟到次数",
+            "规则后迟到分钟", "宽限迟到分钟",
             "扣工资迟到次数", "扣工资迟到分钟", "待审核天数", "异常天数",
             "人工确认条数", "阻断人工确认条数", "人工确认状态", "请假与加班并存天数",
         ])
         sheet.append(headers)
+
+        header_index = {str(value): index for index, value in enumerate(headers)}
 
         period_text = _period_text(period_start, period_end)
         for (name, user_id), items in sorted(grouped.items()):
@@ -120,12 +123,27 @@ class OvertimeReportWriter:
                 blocking_issue_count, self._config, leave_types,
             )
             sheet.append(row)
-            if row[13] or row[28] or row[29]:
+            if row[header_index["漏卡天数"]]:
                 _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
-            elif row[26] or row[27]:
-                _mark_cells(sheet[sheet.max_row], {3, 26, 27}, AMBER_FILL, AMBER_FONT)
+            elif row[header_index["待审核天数"]]:
+                _mark_cells(
+                    sheet[sheet.max_row],
+                    {header_index["统计状态"], header_index["待审核天数"]},
+                    AMBER_FILL,
+                    AMBER_FONT,
+                )
             elif all_issue_count:
-                _mark_cells(sheet[sheet.max_row], {3, 32, 33, 34}, YELLOW_FILL, None)
+                _mark_cells(
+                    sheet[sheet.max_row],
+                    {
+                        header_index["统计状态"],
+                        header_index["人工确认条数"],
+                        header_index["阻断人工确认条数"],
+                        header_index["人工确认状态"],
+                    },
+                    YELLOW_FILL,
+                    None,
+                )
 
         _style_header(sheet)
         sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
@@ -158,6 +176,8 @@ class OvertimeReportWriter:
         ])
         sheet.append(headers)
 
+        header_index = {str(value): index for index, value in enumerate(headers)}
+
         by_date: dict[date, OvertimeResult] = {}
         for item in sorted(items, key=lambda value: value.work_date):
             by_date.setdefault(item.work_date, item)
@@ -168,13 +188,25 @@ class OvertimeReportWriter:
             day_issues = _issues_for_day(input_issues, employee_name, user_id, work_date)
             values = _employee_detail_row(result, work_date, day_issues, self._config, leave_types)
             sheet.append(values)
-            # The seventh value from the end is the leak-card column.
-            if values[-7] in {"是", "缺少每日统计记录"}:
+            if values[header_index["漏卡"]]:
                 _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
-            elif values[-5] == "待处理":
-                _mark_cells(sheet[sheet.max_row], {len(headers) - 5, len(headers) - 4}, YELLOW_FILL, None)
-            elif "待审核" in str(values[-6]) or "待审核" in str(values[-3]):
-                _mark_cells(sheet[sheet.max_row], {len(headers) - 6, len(headers) - 3}, AMBER_FILL, AMBER_FONT)
+            elif values[header_index["人工确认状态"]] == "待处理":
+                _mark_cells(
+                    sheet[sheet.max_row],
+                    {header_index["人工确认状态"], header_index["异常状态"]},
+                    YELLOW_FILL,
+                    None,
+                )
+            elif (
+                "待审核" in str(values[header_index["异常状态"]])
+                or "待审核" in str(values[header_index["统计状态"]])
+            ):
+                _mark_cells(
+                    sheet[sheet.max_row],
+                    {header_index["异常状态"], header_index["统计状态"]},
+                    AMBER_FILL,
+                    AMBER_FONT,
+                )
 
         _style_header(sheet)
         sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
@@ -233,7 +265,8 @@ class OvertimeReportWriter:
         sheet.append([
             "日期", "统计状态", "人工确认条数", "阻断输入条数", "漏卡人数", "待审核人数",
             "加班人数", "加班分钟", "加班小时", "工作日加班分钟", "休息日加班分钟", "节假日加班分钟",
-            "请假有效分钟", "扣工资请假分钟", "原始迟到分钟", "请假抵扣迟到分钟", "宽限迟到分钟", "扣工资迟到分钟",
+            "请假有效分钟", "扣工资请假分钟", "原始迟到分钟", "请假抵扣迟到分钟", "规则后迟到分钟",
+            "宽限迟到分钟", "扣工资迟到分钟",
         ])
         for work_date, items in sorted(grouped.items()):
             all_issues = [item for item in input_issues if item.work_date == work_date]
@@ -251,8 +284,9 @@ class OvertimeReportWriter:
                 sum(item.overtime_minutes for item in items if item.overtime_type == "休息日"),
                 sum(item.overtime_minutes for item in items if item.overtime_type == "节假日"),
                 sum(item.leave_work_minutes for item in items), sum(item.leave_deductible_minutes for item in items),
-                sum(item.late_minutes for item in items), sum(item.late_leave_exempt_minutes for item in items),
-                sum(item.late_grace_minutes for item in items), sum(item.late_chargeable_minutes for item in items),
+                sum(item.late_raw_minutes for item in items), sum(item.late_leave_exempt_minutes for item in items),
+                sum(item.late_minutes for item in items), sum(item.late_grace_minutes for item in items),
+                sum(item.late_chargeable_minutes for item in items),
             ])
             if supplement:
                 _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
@@ -504,8 +538,9 @@ def _overview_row(
         *[type_minutes[kind] for kind in leave_types], other_leave,
         sum(item.leave_non_deductible_minutes for item in items),
         sum(item.leave_deductible_minutes for item in items), sum(item.leave_overlap_minutes for item in items),
-        sum(item.late_minutes > 0 for item in items), sum(item.late_minutes for item in items),
-        sum(item.late_leave_exempt_minutes for item in items), sum(item.late_grace_minutes for item in items),
+        sum(item.late_raw_minutes > 0 for item in items), sum(item.late_raw_minutes for item in items),
+        sum(item.late_leave_exempt_minutes for item in items), sum(item.late_minutes > 0 for item in items),
+        sum(item.late_minutes for item in items), sum(item.late_grace_minutes for item in items),
         sum(item.late_chargeable_minutes > 0 for item in items), sum(item.late_chargeable_minutes for item in items),
         review_count, len(anomaly_dates), all_issue_count, blocking_issue_count,
         "待处理" if all_issue_count else "无",
