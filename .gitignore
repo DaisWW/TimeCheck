@@ -1,0 +1,28 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+*.spec
+
+# Local attendance source files and generated reports
+input/
+output/
+outputs/
+*.xlsx
+*.xlsm
+
+# Local secrets and editor files
+.env
+.env.*
+.vscode/
+.idea/

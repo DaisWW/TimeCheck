@@ -1,0 +1,53 @@
+[sheets]
+daily_sheet = "每日统计"
+raw_sheet = "原始记录"
+
+[workday]
+# 9:00-10:00 弹性上班。
+flex_start_begin = "09:00"
+flex_start_end = "10:00"
+
+# 7.5 小时工作时间 + 1.5 小时午休。
+work_minutes = 450
+lunch_break_minutes = 90
+
+# 迟到宽限按员工自然月累计；先达到次数或分钟上限时停止宽限。
+late_grace_occurrences_per_month = 3
+late_grace_minutes_per_month = 30
+
+# 统计班次为“休息”的周末和节假日加班。
+count_non_workday_overtime = true
+rest_shift_keywords = ["休息"]
+
+[overtime]
+# 晚餐扣除时间。
+dinner_break_minutes = 30
+
+# 不满该分钟数不计入加班。
+min_overtime_minutes = 1
+
+# 1 表示精确到分钟；也可改成 30，并配合 floor、ceil、nearest 使用。
+rounding_unit_minutes = 1
+rounding_mode = "floor"
+
+# 原始记录中这类打卡不参与首末打卡判断。
+invalid_punch_prefixes = ["打卡无效"]
+
+[rest_day]
+# 周末和节假日按实际首末打卡计算；固定午休时段不计入工作时间。
+fixed_lunch_start = "12:00"
+fixed_lunch_minutes = 90
+
+# 审批加班时长与实际打卡时长相差不超过该值时，直接以实际打卡为准。
+# 超过该值时，仍保留实际分钟，但标记为待 HR 审核。
+approval_difference_tolerance_minutes = 30
+
+# 额外指定的节假日日期。班次为“休息”的工作日也会自动按节假日处理。
+holiday_dates = []
+
+# 非工作日晚餐扣除配置；默认 0 表示不扣。需要扣除时可改为 30。
+dinner_break_start = "18:30"
+dinner_break_minutes = 0
+
+[report]
+output_suffix = "_加班分析.xlsx"
