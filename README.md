@@ -19,7 +19,9 @@
 
 ## 运行
 
-把所有待分析的钉钉考勤文件放入 `input` 目录，然后直接运行：
+把所有待分析的钉钉考勤文件放入 `input` 目录，然后双击项目根目录中的 `run_attendance.bat`。程序会在结束后保留窗口，方便查看执行结果。
+
+也可以在命令行中运行：
 
 ```powershell
 python -m attendance_analyzer.cli
