@@ -5,7 +5,6 @@ from datetime import date, datetime, time, timedelta
 
 from .approval import (
     LeaveApprovalInterval,
-    interval_union_minutes,
     overlapping_interval_minutes,
     parse_leave_approval_intervals,
     parse_overtime_approval_intervals,
@@ -154,59 +153,55 @@ class OvertimeRule:
         return result
 
     def _leave_breakdown(self, day_start: datetime, day_end: datetime, intervals) -> dict:
-        """Return raw/effective leave minutes without double-counting overlaps.
+        """Return the daily leave breakdown in effective working minutes.
 
-        ``approved_leave_minutes`` remains the raw wall-clock union for
-        backwards compatibility.  Effective leave minutes remove the fixed
-        lunch interval.  When paid and non-paid types overlap, the overlap is
-        reported and assigned to the non-paid bucket so the two payroll
-        buckets still reconcile to the effective total.
+        The approval interval is retained separately as a raw wall-clock union.
+        For classification, a calendar day contributes at most
+        ``workday.work_minutes`` after the fixed lunch interval is removed.  A
+        disjoint segment representation keeps overlapping leave types accurate
+        even when a long, multi-day approval is clipped to the daily limit.
         """
-        by_kind: dict[str, list] = {}
-        for interval in intervals:
-            by_kind.setdefault(interval.kind, []).append(interval)
+        segments = self._effective_leave_segments(day_start, day_end, intervals)
+        segments = self._limit_leave_segments(segments, self._config.workday.work_minutes)
 
-        minutes_by_type = {
-            kind: self._effective_leave_minutes(day_start, day_end, kind_intervals)
-            for kind, kind_intervals in sorted(by_kind.items())
-        }
-        effective_total = self._effective_leave_minutes(day_start, day_end, intervals)
-        non_paid_intervals = [
-            interval for interval in intervals if interval.kind in NON_DEDUCTIBLE_LEAVE_TYPES
-        ]
-        paid_intervals = [
-            interval for interval in intervals if interval.kind not in NON_DEDUCTIBLE_LEAVE_TYPES
-        ]
-        non_paid_minutes = self._effective_leave_minutes(day_start, day_end, non_paid_intervals)
-        paid_minutes = self._effective_leave_minutes(day_start, day_end, paid_intervals)
-        overlap_minutes = max(non_paid_minutes + paid_minutes - effective_total, 0)
+        minutes_by_type: dict[str, int] = {}
+        non_paid_minutes = 0
+        deductible_minutes = 0
+        overlap_minutes = 0
         overlap_types: set[str] = set()
-        for left in non_paid_intervals:
-            for right in paid_intervals:
-                overlap_start = max(left.start, right.start, day_start)
-                overlap_end = min(left.end, right.end, day_end)
-                if overlap_end <= overlap_start:
-                    continue
-                overlap_interval = LeaveApprovalInterval(
-                    kind=f"{left.kind}/{right.kind}",
-                    start=overlap_start,
-                    end=overlap_end,
+
+        for start, end, kinds in segments:
+            minutes = minutes_between(start, end)
+            for kind in kinds:
+                minutes_by_type[kind] = minutes_by_type.get(kind, 0) + minutes
+
+            non_paid_kinds = kinds & NON_DEDUCTIBLE_LEAVE_TYPES
+            paid_kinds = kinds - NON_DEDUCTIBLE_LEAVE_TYPES
+            if non_paid_kinds:
+                # Non-deductible leave has priority for a minute covered by
+                # both buckets, so the two classification buckets reconcile.
+                non_paid_minutes += minutes
+            elif paid_kinds:
+                deductible_minutes += minutes
+            if non_paid_kinds and paid_kinds:
+                overlap_minutes += minutes
+                overlap_types.update(
+                    f"{non_paid_kind}/{paid_kind}"
+                    for non_paid_kind in sorted(non_paid_kinds)
+                    for paid_kind in sorted(paid_kinds)
                 )
-                if self._effective_leave_minutes(day_start, day_end, [overlap_interval]):
-                    overlap_types.add(f"{left.kind}/{right.kind}")
 
         return {
-            "work_minutes": effective_total,
-            "minutes_by_type": minutes_by_type,
+            "work_minutes": sum(minutes_between(start, end) for start, end, _ in segments),
+            "minutes_by_type": dict(sorted(minutes_by_type.items())),
             "non_deductible_minutes": non_paid_minutes,
-            "deductible_minutes": max(paid_minutes - overlap_minutes, 0),
+            "deductible_minutes": deductible_minutes,
             "overlap_minutes": overlap_minutes,
             "overlap_types": "、".join(sorted(overlap_types)),
         }
 
-    def _effective_leave_minutes(self, day_start: datetime, day_end: datetime, intervals) -> int:
-        if not intervals:
-            return 0
+    def _effective_leave_segments(self, day_start: datetime, day_end: datetime, intervals):
+        """Build disjoint, lunch-excluded segments carrying their leave types."""
         clipped = [
             LeaveApprovalInterval(
                 kind=interval.kind,
@@ -218,36 +213,57 @@ class OvertimeRule:
         ]
         clipped = [interval for interval in clipped if interval.end > interval.start]
         if not clipped:
-            return 0
-        raw_minutes = interval_union_minutes(clipped)
-        lunch_overlap = self._break_overlap_for_intervals(
-            clipped,
-            day_start,
-            day_end,
-            self._config.rest_day.fixed_lunch_start,
-            self._config.rest_day.fixed_lunch_minutes,
-        )
-        return max(raw_minutes - lunch_overlap, 0)
+            return []
 
-    def _break_overlap_for_intervals(
-        self,
-        intervals,
-        day_start: datetime,
-        day_end: datetime,
-        break_start,
-        break_minutes: int,
-    ) -> int:
-        if not intervals or break_minutes <= 0:
-            return 0
-        total = 0
-        current_date = day_start.date()
-        last_date = day_end.date()
-        while current_date <= last_date:
-            period_start = datetime.combine(current_date, break_start)
-            period_end = period_start + timedelta(minutes=break_minutes)
-            total += overlapping_interval_minutes(period_start, period_end, intervals)
-            current_date += timedelta(days=1)
-        return total
+        boundaries = {day_start, day_end}
+        for interval in clipped:
+            boundaries.add(interval.start)
+            boundaries.add(interval.end)
+
+        lunch_start = datetime.combine(day_start.date(), self._config.rest_day.fixed_lunch_start)
+        lunch_end = lunch_start + timedelta(minutes=self._config.rest_day.fixed_lunch_minutes)
+        if lunch_start < day_end and lunch_end > day_start:
+            boundaries.add(max(lunch_start, day_start))
+            boundaries.add(min(lunch_end, day_end))
+
+        ordered = sorted(boundaries)
+        segments = []
+        for start, end in zip(ordered, ordered[1:]):
+            if end <= start:
+                continue
+            if start < lunch_end and end > lunch_start:
+                continue
+            kinds = frozenset(
+                interval.kind
+                for interval in clipped
+                if interval.start < end and interval.end > start
+            )
+            if kinds:
+                segments.append((start, end, kinds))
+        return segments
+
+    @staticmethod
+    def _limit_leave_segments(segments, maximum_minutes: int):
+        """Keep the first ``maximum_minutes`` effective minutes of a day."""
+        if maximum_minutes <= 0:
+            return []
+        remaining = maximum_minutes
+        limited = []
+        for start, end, kinds in segments:
+            if remaining <= 0:
+                break
+            available = minutes_between(start, end)
+            if available <= 0:
+                continue
+            take = min(available, remaining)
+            limited.append((start, start + timedelta(minutes=take), kinds))
+            remaining -= take
+        return limited
+
+    def _effective_leave_minutes(self, day_start: datetime, day_end: datetime, intervals) -> int:
+        segments = self._effective_leave_segments(day_start, day_end, intervals)
+        limited = self._limit_leave_segments(segments, self._config.workday.work_minutes)
+        return sum(minutes_between(start, end) for start, end, _ in limited)
 
     def _calculate_workday(
         self,

@@ -222,6 +222,12 @@ class OvertimeReportWriterTest(unittest.TestCase):
         self.assertEqual(values["宽限迟到分钟"], 30)
         self.assertEqual(values["扣工资迟到次数"], 1)
         self.assertEqual(values["扣工资迟到分钟"], 10)
+        self.assertEqual(values["迟到次数（原始）"], 1)
+        self.assertEqual(values["迟到时间（分钟）"], 45)
+        self.assertEqual(values["迟到计入时间（分钟）"], 10)
+        self.assertIn("加班时间（分钟）", values)
+        self.assertIn("请假时间（调休、年假）（分钟）", values)
+        self.assertIn("请假时间（其他）（分钟）", values)
 
 
 if __name__ == "__main__":

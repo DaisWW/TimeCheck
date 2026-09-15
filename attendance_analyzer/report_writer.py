@@ -92,26 +92,44 @@ class OvertimeReportWriter:
         period_end: date | None,
     ) -> None:
         leave_types = _leave_types(grouped.values())
-        headers = [
+        legacy_headers = [
             "姓名", "UserId", "统计期间", "统计状态", "记录天数", "有效统计天数",
             "加班天数", "加班总分钟", "加班总小时", "工作日加班分钟", "休息日加班分钟",
             "节假日加班分钟", "待审核加班分钟", "漏卡天数", "请假审批覆盖分钟(原始)",
             "请假有效分钟(扣午休)",
         ]
-        headers.extend(
+        legacy_headers.extend(
             f"{kind}分钟" + ("(不扣)" if kind in NON_DEDUCTIBLE_LEAVE_TYPES else "")
             for kind in leave_types
         )
-        headers.extend([
+        legacy_headers.extend([
             "其他请假分钟", "不扣工资请假分钟", "扣工资请假分钟", "请假重叠分钟",
             "原始迟到次数", "原始迟到分钟", "请假抵扣迟到分钟", "规则后迟到次数",
             "规则后迟到分钟", "宽限迟到分钟",
             "扣工资迟到次数", "扣工资迟到分钟", "待审核天数", "异常天数",
             "人工确认条数", "阻断人工确认条数", "人工确认状态", "请假与加班并存天数",
         ])
+        friendly_headers = [
+            "加班时间（分钟）", "加班时间（小时）",
+            "工作日加班时间（分钟）", "休息日加班时间（分钟）", "节假日加班时间（分钟）",
+            "待审核加班时间（分钟）",
+            "请假时间（分钟）", "请假时间（调休、年假）（分钟）", "请假时间（其他）（分钟）",
+            "请假重叠时间（分钟）",
+            "迟到次数（原始）", "迟到时间（分钟）", "请假抵扣时间（分钟）",
+            "迟到次数（规则后）", "迟到宽限时间（分钟）", "迟到计入次数", "迟到计入时间（分钟）",
+            "时间差额（分钟）",
+            "待审核天数", "漏卡天数", "异常天数", "人工确认条数", "阻断人工确认条数",
+            "人工确认状态", "请假与加班并存天数",
+        ]
+        headers = legacy_headers[:7] + friendly_headers + legacy_headers[7:]
         sheet.append(headers)
 
-        header_index = {str(value): index for index, value in enumerate(headers)}
+        # Keep the first occurrence when a friendly field intentionally mirrors
+        # an older audit field.  The legacy columns remain available (hidden)
+        # for existing HR scripts and backwards-compatible checks.
+        header_index: dict[str, int] = {}
+        for index, value in enumerate(headers):
+            header_index.setdefault(str(value), index)
 
         period_text = _period_text(period_start, period_end)
         for (name, user_id), items in sorted(grouped.items()):
@@ -122,10 +140,19 @@ class OvertimeReportWriter:
                 name, user_id, period_text, items, all_issue_count,
                 blocking_issue_count, self._config, leave_types,
             )
-            sheet.append(row)
-            if row[header_index["漏卡天数"]]:
+            friendly_row = _overview_friendly_row(
+                items,
+                self._config,
+                all_issue_count,
+                blocking_issue_count,
+            )
+            # _overview_row retains the former, fully auditable column set.
+            # Put the compact HR-facing block before those hidden audit fields.
+            output_row = row[:7] + friendly_row + row[7:]
+            sheet.append(output_row)
+            if output_row[header_index["漏卡天数"]]:
                 _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
-            elif row[header_index["待审核天数"]]:
+            elif output_row[header_index["待审核天数"]]:
                 _mark_cells(
                     sheet[sheet.max_row],
                     {header_index["统计状态"], header_index["待审核天数"]},
@@ -147,6 +174,11 @@ class OvertimeReportWriter:
 
         _style_header(sheet)
         sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
+        # The compact block above is the reader-facing view.  Keep the old
+        # metric columns hidden but present for audit/backward compatibility.
+        visible_columns = 7 + len(friendly_headers)
+        for column in range(visible_columns + 1, sheet.max_column + 1):
+            sheet.column_dimensions[get_column_letter(column)].hidden = True
 
     def _write_employee_detail(
         self,
@@ -544,6 +576,49 @@ def _overview_row(
         sum(item.late_chargeable_minutes > 0 for item in items), sum(item.late_chargeable_minutes for item in items),
         review_count, len(anomaly_dates), all_issue_count, blocking_issue_count,
         "待处理" if all_issue_count else "无",
+        sum(bool(item.approved_leave_minutes and item.overtime_minutes) for item in items),
+    ]
+
+
+def _overview_friendly_row(
+    items: list[OvertimeResult],
+    config: AppConfig,
+    all_issue_count: int,
+    blocking_issue_count: int,
+) -> list[object]:
+    """Return the compact, reader-facing metrics for one employee."""
+    overtime_minutes = sum(item.overtime_minutes for item in items)
+    anomaly_dates = {
+        item.work_date for item in items
+        if _anomalies_for(item, config) or _supplement_punch_issue(item, config) is not None
+    }
+    review_count = sum(_needs_review(item) for item in items)
+    supplement_count = sum(_supplement_punch_issue(item, config) is not None for item in items)
+    return [
+        overtime_minutes,
+        round(overtime_minutes / 60, 2),
+        sum(item.overtime_minutes for item in items if item.overtime_type == "工作日"),
+        sum(item.overtime_minutes for item in items if item.overtime_type == "休息日"),
+        sum(item.overtime_minutes for item in items if item.overtime_type == "节假日"),
+        sum(item.overtime_minutes for item in items if _needs_review(item)),
+        sum(item.leave_work_minutes for item in items),
+        sum(item.leave_non_deductible_minutes for item in items),
+        sum(item.leave_deductible_minutes for item in items),
+        sum(item.leave_overlap_minutes for item in items),
+        sum(item.late_raw_minutes > 0 for item in items),
+        sum(item.late_raw_minutes for item in items),
+        sum(item.late_leave_exempt_minutes for item in items),
+        sum(item.late_minutes > 0 for item in items),
+        sum(item.late_grace_minutes for item in items),
+        sum(item.late_chargeable_minutes > 0 for item in items),
+        sum(item.late_chargeable_minutes for item in items),
+        sum(item.approval_difference_minutes or 0 for item in items),
+        review_count,
+        supplement_count,
+        len(anomaly_dates),
+        all_issue_count,
+        blocking_issue_count,
+        _overview_status(blocking_issue_count, supplement_count, review_count, all_issue_count),
         sum(bool(item.approved_leave_minutes and item.overtime_minutes) for item in items),
     ]
 

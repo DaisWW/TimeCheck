@@ -142,6 +142,8 @@ class OvertimeRuleTest(unittest.TestCase):
         )
 
         self.assertEqual(result.approved_leave_minutes, 1440)
+        self.assertEqual(result.leave_work_minutes, 450)
+        self.assertEqual(result.leave_non_deductible_minutes, 450)
 
     def test_cross_midnight_clock_out_counts_for_the_attendance_date(self):
         result = OvertimeRule(AppConfig()).calculate(
