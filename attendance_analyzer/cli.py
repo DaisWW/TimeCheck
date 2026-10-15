@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
 import sys
+from zipfile import BadZipFile
+
+from openpyxl.utils.exceptions import InvalidFileException
 
 from .analyzer import AttendanceAnalyzer
+from .company_calendar import find_company_holidays
 from .config import AppConfig, find_default_config
 from .report_writer import OvertimeReportWriter
 
@@ -16,7 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="钉钉考勤 Excel 或输入目录。未指定时批量分析 ./input。",
     )
-    parser.add_argument("-c", "--config", help="TOML 配置文件路径。未指定时优先读取 ./config.toml。")
+    parser.add_argument("-c", "--config", help="CSV 配置文件路径。未指定时读取当前目录或 EXE 所在目录的 config.csv。")
     parser.add_argument(
         "-o",
         "--output",
@@ -25,11 +30,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    output_dir: Path | None = None,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> int:
     args = build_parser().parse_args(argv)
     config_path = find_default_config(args.config)
-    config = AppConfig.load(config_path)
-    config.validate()
+    try:
+        config = AppConfig.load(config_path)
+        config.validate()
+    except (OSError, ValueError) as error:
+        print(f"配置错误（{config_path}）：{error}", file=sys.stderr)
+        return 2
+    print(f"使用配置：{config_path.resolve()}" if config_path else "使用内置默认配置")
+    company_holidays_path = find_company_holidays(config_path)
+    print(
+        f"公司放假配置：{company_holidays_path.resolve()}（{len(config.company_holidays)} 天）"
+        if company_holidays_path else "公司放假配置：未配置"
+    )
 
     if args.input:
         input_path = Path(args.input).expanduser().resolve()
@@ -40,18 +60,30 @@ def main(argv: list[str] | None = None) -> int:
             output_path = (
                 Path(args.output).expanduser().resolve()
                 if args.output
-                else _default_output_path(input_path, config)
+                else (output_dir / f"{input_path.stem}{config.report.output_suffix}" if output_dir else _default_output_path(input_path, config))
             )
-            return _analyze_file(input_path, output_path, config)
+            code = _analyze_file(
+                input_path, output_path, config,
+                progress=(lambda status: progress(0, 1, status)) if progress else None,
+            )
+            if code == 0 and progress:
+                progress(1, 1, "统计完成")
+            return code
         input_dir = input_path
     else:
         input_dir = _base_dir() / "input"
 
-    output_dir = Path(args.output).expanduser().resolve() if args.output else _base_dir() / "output"
-    return _analyze_directory(input_dir, output_dir, config)
+    output_dir = Path(args.output).expanduser().resolve() if args.output else (output_dir or _base_dir() / "output")
+    return _analyze_directory(input_dir, output_dir, config, progress=progress)
 
 
-def _analyze_directory(input_dir: Path, output_dir: Path, config: AppConfig) -> int:
+def _analyze_directory(
+    input_dir: Path,
+    output_dir: Path,
+    config: AppConfig,
+    *,
+    progress: Callable[[int, int, str], None] | None = None,
+) -> int:
     if not input_dir.is_dir():
         print(f"找不到输入目录：{input_dir}", file=sys.stderr)
         return 2
@@ -61,26 +93,72 @@ def _analyze_directory(input_dir: Path, output_dir: Path, config: AppConfig) -> 
         print(f"输入目录中没有可分析的 Excel：{input_dir}", file=sys.stderr)
         return 2
 
+    report_sources: dict[Path, Path] = {}
     for input_path in input_paths:
         output_path = output_dir / f"{input_path.stem}{config.report.output_suffix}"
-        code = _analyze_file(input_path, output_path, config)
+        if output_path in report_sources:
+            print(
+                f"输出文件重名：{report_sources[output_path].name} 与 {input_path.name} 将写入同一份结果 {output_path}。\n"
+                "请先重命名其中一个输入文件，再重新统计。",
+                file=sys.stderr,
+            )
+            return 2
+        report_sources[output_path] = input_path
+
+    for index, input_path in enumerate(input_paths, 1):
+        print(f"正在处理文件 {index}/{len(input_paths)}：{input_path.name}")
+        output_path = output_dir / f"{input_path.stem}{config.report.output_suffix}"
+        code = _analyze_file(
+            input_path, output_path, config,
+            progress=(lambda status: progress(index - 1, len(input_paths), status)) if progress else None,
+        )
         if code != 0:
             return code
+        if progress:
+            progress(index, len(input_paths), f"已完成：{input_path.name}")
 
     print(f"批量分析完成：{len(input_paths)} 个文件")
     print(f"输出目录：{output_dir}")
     return 0
 
 
-def _analyze_file(input_path: Path, output_path: Path, config: AppConfig) -> int:
+def _analyze_file(
+    input_path: Path,
+    output_path: Path,
+    config: AppConfig,
+    *,
+    progress: Callable[[str], None] | None = None,
+) -> int:
+    if input_path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        print(f"不支持的输入格式：{input_path}；请使用 .xlsx 或 .xlsm。", file=sys.stderr)
+        return 4
+    if input_path.resolve() == output_path.resolve():
+        print("输出路径不能覆盖输入考勤文件。", file=sys.stderr)
+        return 2
     analyzer = AttendanceAnalyzer(config)
-    results = analyzer.analyze_overtime(input_path)
+    if progress:
+        progress(f"读取和计算：{input_path.name}")
+    print(f"正在读取和计算：{input_path.name}")
+    try:
+        results = analyzer.analyze_overtime(input_path)
+    except (ValueError, OSError, BadZipFile, InvalidFileException) as error:
+        print(f"考勤文件处理失败：{input_path}\n{error}", file=sys.stderr)
+        if output_path.exists():
+            print(f"本次结果未更新，已有文件仍是旧结果：{output_path}", file=sys.stderr)
+        return 4
+    if progress:
+        progress(f"生成报表：{input_path.name}")
+    print(f"正在生成报表：{output_path.name}")
     try:
         OvertimeReportWriter(config).write(output_path, results, analyzer.last_input_issues)
     except PermissionError:
         print(f"无法写入输出文件：{output_path}", file=sys.stderr)
         print("可能原因：文件正被 Excel 打开，或当前用户没有写入权限。", file=sys.stderr)
         print("请关闭该文件后重试，或使用 -o 指定新的输出路径。", file=sys.stderr)
+        return 3
+    except OSError as error:
+        print(f"无法保存结果：{output_path}\n{error}", file=sys.stderr)
+        print("请检查目标目录的写入权限和剩余空间，修正后重试。", file=sys.stderr)
         return 3
 
     overtime_days = sum(1 for item in results if item.has_overtime)

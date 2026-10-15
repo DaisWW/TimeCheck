@@ -62,7 +62,7 @@ class DingTalkWorkbookReaderTest(unittest.TestCase):
             ]
         )
         sheet.append([])
-        sheet.append(["Alice", "u1", "2026-07-01", "A", "25:00", "", "19:00", "", ""])
+        sheet.append(["Alice", "u1", "2026-07-01", "A 09:30-18:30", "25:00", "", "19:00", "", ""])
 
         issues = []
         records = DingTalkWorkbookReader(AppConfig())._read_daily_records(sheet, issues)

@@ -1,14 +1,23 @@
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 import unittest
 
 from attendance_analyzer.analyzer import AttendanceAnalyzer
-from attendance_analyzer.config import AppConfig, RestDayConfig
+from attendance_analyzer.config import AppConfig, RestDayConfig, WorkdayConfig
 from attendance_analyzer.excel_reader import fallback_punches
 from attendance_analyzer.models import DailyAttendance, PunchRecord
 from attendance_analyzer.rules import OvertimeRule
 
 
 class OvertimeRuleTest(unittest.TestCase):
+    def test_lateness_uses_fixed_lunch_even_when_flexible_end_lunch_differs(self):
+        config = AppConfig(workday=WorkdayConfig(lunch_break_minutes=60))
+        result = OvertimeRule(config).calculate(
+            DailyAttendance("Alice", "u1", date(2026, 8, 3), "A 09:30-18:30", start_time_text="13:45", end_time_text="20:00"),
+            [],
+        )
+        self.assertEqual(result.late_raw_minutes, 135)
+        self.assertEqual(result.late_minutes, 135)
+
     def test_flexible_start_and_dinner_break(self):
         result = OvertimeRule(AppConfig()).calculate(
             DailyAttendance("Alice", "u1", date(2026, 5, 6), "A 09:30-18:30"),
@@ -135,7 +144,7 @@ class OvertimeRuleTest(unittest.TestCase):
                 "Alice",
                 "u1",
                 date(2026, 5, 9),
-                "A",
+                "A 09:30-18:30",
                 approval_text="年假05-08 09:30到05-22 18:30 12天",
             ),
             [],
@@ -144,6 +153,99 @@ class OvertimeRuleTest(unittest.TestCase):
         self.assertEqual(result.approved_leave_minutes, 1440)
         self.assertEqual(result.leave_work_minutes, 450)
         self.assertEqual(result.leave_non_deductible_minutes, 450)
+
+    def test_multiday_leave_excludes_rest_days(self):
+        rule = OvertimeRule(AppConfig())
+        results = []
+        for offset in range(8):
+            day = date(2026, 8, 15) + timedelta(days=offset)
+            results.append(rule.calculate(DailyAttendance(
+                "Alice", "u1", day, "休息" if day.weekday() >= 5 else "A 09:30-18:30",
+                approval_text="年假08-15 08:05到08-22 08:05 37.5小时",
+            ), []))
+        self.assertEqual(sum(item.leave_work_minutes for item in results), 2250)
+        self.assertTrue(all(item.leave_work_minutes == 0 for item in results if item.work_date.weekday() >= 5))
+
+    def test_business_trip_is_attendance_and_sick_leave_wage_classification_is_pending(self):
+        rule = OvertimeRule(AppConfig())
+        for kind in ("外出", "出差"):
+            with self.subTest(kind=kind):
+                result = rule.calculate(DailyAttendance(
+                    "Alice", "u1", date(2026, 8, 3), "A 09:30-18:30",
+                    approval_text=f"{kind}08-03 09:00到08-03 12:00 2.5小时",
+                ), [])
+                self.assertEqual(result.business_attendance_minutes, 180)
+                self.assertEqual(result.leave_work_minutes, 0)
+                self.assertEqual(result.leave_deductible_minutes, 0)
+        for kind in ("病假", "婚假", "请假"):
+            with self.subTest(kind=kind):
+                result = rule.calculate(DailyAttendance(
+                    "Alice", "u1", date(2026, 8, 3), "A 09:30-18:30",
+                    approval_text=f"{kind}08-03 09:00到08-03 12:00 3小时",
+                ), [])
+                self.assertEqual(result.leave_unclassified_minutes, 180)
+                self.assertEqual(result.leave_non_deductible_minutes, 0)
+                self.assertEqual(result.leave_deductible_minutes, 0)
+                self.assertIn("工资分类未确认", result.leave_review_reason)
+
+    def test_leave_uses_interval_minus_lunch_without_clipping_to_displayed_shift(self):
+        result = OvertimeRule(AppConfig()).calculate(DailyAttendance(
+            "Alice", "u1", date(2026, 8, 3), "A 09:30-18:30",
+            approval_text="事假08-03 09:00到08-03 18:00 7小时",
+        ), [])
+        self.assertEqual(result.leave_work_minutes, 450)
+        self.assertEqual(result.leave_deductible_minutes, 450)
+
+    def test_additional_daily_punches_use_first_and_last_valid_punch(self):
+        result = OvertimeRule(AppConfig()).calculate(DailyAttendance(
+            "Alice", "u1", date(2026, 8, 15), "休息",
+            start_time_text="10:43", end_time_text="18:07",
+            additional_punches=(("18:19", "正常"), ("20:00", "打卡无效:已更新")),
+            approval_text="加班08-15 10:43到08-15 18:07 7.4小时",
+        ), [])
+        self.assertEqual(result.overtime_minutes, 366)
+        self.assertEqual(result.approval_overtime_minutes, 354)
+
+    def test_duplicate_timestamp_is_not_a_punch_pair(self):
+        punch = PunchRecord("Alice", "u1", datetime(2026, 8, 3, 10), "正常", 4)
+        result = OvertimeRule(AppConfig()).calculate(
+            DailyAttendance("Alice", "u1", date(2026, 8, 3), "A 09:30-18:30"), [punch, punch]
+        )
+        self.assertFalse(result.punch_pair_complete)
+        self.assertEqual(result.overtime_minutes, 0)
+
+    def test_single_raw_punch_is_preserved_when_daily_fallback_is_empty(self):
+        punch = PunchRecord("Alice", "u1", datetime(2026, 8, 3, 10, 15), "正常", 4)
+        result = OvertimeRule(AppConfig()).calculate(
+            DailyAttendance("Alice", "u1", date(2026, 8, 3), "A 09:30-18:30"), [punch]
+        )
+        self.assertEqual(result.first_clock_in, punch.occurred_at)
+        self.assertFalse(result.punch_pair_complete)
+
+    def test_overlapping_overtime_approvals_are_counted_once(self):
+        result = OvertimeRule(AppConfig()).calculate(DailyAttendance(
+            "Alice", "u1", date(2026, 8, 1), "休息",
+            start_time_text="09:00", end_time_text="18:00",
+            approval_text="加班08-01 09:00到08-01 18:00，加班08-01 09:00到08-01 18:00",
+        ), [])
+        self.assertEqual(result.approval_overtime_minutes, 450)
+        self.assertEqual(result.approval_difference_minutes, 0)
+
+    def test_weekday_rest_shift_is_not_a_statutory_holiday(self):
+        result = OvertimeRule(AppConfig()).calculate(DailyAttendance(
+            "Alice", "u1", date(2026, 8, 3), "休息", start_time_text="10:00", end_time_text="18:00",
+        ), [])
+        self.assertEqual(result.overtime_type, "休息日")
+
+    def test_late_leave_overlap_does_not_create_negative_exemption_before_lunch(self):
+        result = OvertimeRule(AppConfig()).calculate(DailyAttendance(
+            "Alice", "u1", date(2026, 8, 3), "A 09:30-18:30",
+            start_time_text="10:15", end_time_text="18:30",
+            approval_text="事假08-03 10:00到08-03 12:00 2小时",
+        ), [])
+        self.assertEqual(result.late_raw_minutes, 15)
+        self.assertEqual(result.late_leave_exempt_minutes, 15)
+        self.assertEqual(result.late_minutes, 0)
 
     def test_cross_midnight_clock_out_counts_for_the_attendance_date(self):
         result = OvertimeRule(AppConfig()).calculate(

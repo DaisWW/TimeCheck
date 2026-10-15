@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Name = "dingding-attendance",
     [string]$Python = "python"
 )
@@ -37,7 +37,15 @@ try {
         throw "PyInstaller build failed with exit code $LASTEXITCODE"
     }
 
-    Copy-Item (Join-Path $repoRoot "config.toml") (Join-Path $releaseDir "config.toml") -Force
+    foreach ($legacyConfigName in @("config.toml", "config.example.toml")) {
+        $legacyConfigPath = Join-Path $releaseDir $legacyConfigName
+        if (Test-Path -LiteralPath $legacyConfigPath -PathType Leaf) {
+            Remove-Item -LiteralPath $legacyConfigPath -Force
+        }
+    }
+    foreach ($configName in @("config.csv", "config.example.csv", "公司放假.csv", "公司放假.example.csv")) {
+        Copy-Item (Join-Path $repoRoot $configName) (Join-Path $releaseDir $configName) -Force
+    }
     Copy-Item (Join-Path $PSScriptRoot "run_attendance.bat") (Join-Path $releaseDir "run_attendance.bat") -Force
     New-Item -ItemType Directory -Force -Path (Join-Path $releaseDir "input"), (Join-Path $releaseDir "output") | Out-Null
 

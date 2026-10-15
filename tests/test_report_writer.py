@@ -5,7 +5,7 @@ import unittest
 
 from openpyxl import load_workbook
 
-from attendance_analyzer.config import AppConfig
+from attendance_analyzer.config import AppConfig, RestDayConfig
 from attendance_analyzer.models import InputIssue, OvertimeResult
 from attendance_analyzer.report_writer import OvertimeReportWriter, _supplement_punch_issue
 
@@ -31,6 +31,32 @@ def _result(work_date: date, **overrides) -> OvertimeResult:
 
 
 class OvertimeReportWriterTest(unittest.TestCase):
+    def test_configured_holiday_without_attendance_does_not_require_punches(self):
+        config = AppConfig(rest_day=RestDayConfig(holiday_dates=(date(2026, 10, 1),)))
+        result = _result(date(2026, 10, 1), overtime_type="节假日", notes=["有效上下班打卡不足"])
+        self.assertIsNone(_supplement_punch_issue(result, config))
+
+    def test_attendance_and_pending_leave_categories_remain_visible(self):
+        result = _result(
+            date(2026, 8, 3), business_attendance_minutes=150,
+            leave_work_minutes=60, leave_unclassified_minutes=60,
+            leave_review_reason="病假工资分类待确认", punch_pair_complete=True,
+        )
+        issue = InputIssue(
+            "每日统计", 5, "Alice", "u1", date(2026, 8, 3), "关联的审批单",
+            "补卡申请", "补卡待核对", "待确认", "核对后重跑", blocks_summary=False,
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "result.xlsx"
+            OvertimeReportWriter(AppConfig()).write(path, [result], [issue])
+            workbook = load_workbook(path, data_only=True)
+            overview = {cell.value: workbook["总览"].cell(2, cell.column).value for cell in workbook["总览"][1]}
+            self.assertEqual(overview["外出/出差出勤时间（分钟）"], 150)
+            self.assertEqual(overview["工资分类待确认请假（分钟）"], 60)
+            daily = workbook["每日汇总"]
+            self.assertIn("待审核", daily["B2"].value)
+            workbook.close()
+
     def test_sick_leave_does_not_create_missing_punch_notification(self):
         result = OvertimeResult(
             employee_name="Alice",
@@ -49,6 +75,7 @@ class OvertimeReportWriterTest(unittest.TestCase):
             start_result="请假",
             end_result="请假",
             punch_pair_complete=False,
+            approved_non_punch_minutes=450,
             notes=["有效上下班打卡不足"],
         )
 

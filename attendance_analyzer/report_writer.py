@@ -120,6 +120,8 @@ class OvertimeReportWriter:
             "时间差额（分钟）",
             "待审核天数", "漏卡天数", "异常天数", "人工确认条数", "阻断人工确认条数",
             "人工确认状态", "请假与加班并存天数",
+            "外出/出差出勤时间（分钟）", "工资分类待确认请假（分钟）",
+            "公司放假加班时间（分钟）", "公司放假抵扣迟到时间（分钟）",
         ]
         headers = legacy_headers[:7] + friendly_headers + legacy_headers[7:]
         sheet.append(headers)
@@ -205,6 +207,9 @@ class OvertimeReportWriter:
             "原始迟到分钟", "请假抵扣迟到分钟", "规则后迟到分钟", "迟到次数(月内)",
             "宽限迟到分钟", "扣工资迟到分钟", "迟到状态", "审批加班分钟", "审批差异分钟",
             "审批核对状态", "漏卡", "人工确认条数", "人工确认状态", "异常状态", "统计状态", "备注",
+            "外出/出差出勤分钟", "工资分类待确认请假分钟",
+            "公司放假时段", "公司放假说明", "公司放假加班分钟", "公司放假加班开始", "公司放假加班结束",
+            "工作日加班分钟", "休息日加班分钟", "公司放假抵扣迟到分钟", "当天应出勤分钟",
         ])
         sheet.append(headers)
 
@@ -219,7 +224,19 @@ class OvertimeReportWriter:
             result = by_date.get(work_date)
             day_issues = _issues_for_day(input_issues, employee_name, user_id, work_date)
             values = _employee_detail_row(result, work_date, day_issues, self._config, leave_types)
-            sheet.append(values)
+            holiday = self._config.company_holiday_on(work_date)
+            sheet.append(values + [
+                result.business_attendance_minutes if result else 0,
+                result.leave_unclassified_minutes if result else 0,
+                holiday.period if holiday else "", holiday.note if holiday else "",
+                result.company_holiday_overtime_minutes if result else 0,
+                fmt_dt(result.company_holiday_overtime_start) if result else "",
+                fmt_dt(result.company_holiday_overtime_end) if result else "",
+                result.workday_overtime_minutes if result else 0,
+                result.rest_day_overtime_minutes if result else 0,
+                result.late_company_holiday_exempt_minutes if result else 0,
+                result.required_work_minutes if result else 0,
+            ])
             if values[header_index["漏卡"]]:
                 _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
             elif values[header_index["人工确认状态"]] == "待处理":
@@ -252,6 +269,8 @@ class OvertimeReportWriter:
             "审批加班分钟", "审批差异(分钟)", "审批核对状态", "原始迟到分钟", "请假抵扣迟到分钟",
             "迟到分钟", "迟到次数(月内)", "宽限迟到分钟", "扣款迟到分钟", "迟到状态", "统计状态",
             "备注", "计算说明",
+            "公司放假时段", "公司放假说明", "公司放假加班分钟", "工作日加班分钟", "休息日加班分钟",
+            "公司放假抵扣迟到分钟", "当天应出勤分钟",
         ]
         sheet.append(headers)
         for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
@@ -299,6 +318,7 @@ class OvertimeReportWriter:
             "加班人数", "加班分钟", "加班小时", "工作日加班分钟", "休息日加班分钟", "节假日加班分钟",
             "请假有效分钟", "扣工资请假分钟", "原始迟到分钟", "请假抵扣迟到分钟", "规则后迟到分钟",
             "宽限迟到分钟", "扣工资迟到分钟",
+            "公司放假加班分钟", "公司放假抵扣迟到分钟",
         ])
         for work_date, items in sorted(grouped.items()):
             all_issues = [item for item in input_issues if item.work_date == work_date]
@@ -307,18 +327,20 @@ class OvertimeReportWriter:
             reviews = sum(_needs_review(item) for item in items)
             minutes = sum(item.overtime_minutes for item in items)
             status = _summary_status(blocking, supplement, reviews)
-            if not blocking and all_issues:
+            if status == "有效" and all_issues:
                 status = "有效（有待确认项）"
             sheet.append([
                 work_date, status, len(all_issues), blocking, supplement, reviews,
                 sum(item.has_overtime for item in items), minutes, round(minutes / 60, 2),
-                sum(item.overtime_minutes for item in items if item.overtime_type == "工作日"),
-                sum(item.overtime_minutes for item in items if item.overtime_type == "休息日"),
+                sum(item.workday_overtime_minutes for item in items),
+                sum(item.rest_day_overtime_minutes for item in items),
                 sum(item.overtime_minutes for item in items if item.overtime_type == "节假日"),
                 sum(item.leave_work_minutes for item in items), sum(item.leave_deductible_minutes for item in items),
                 sum(item.late_raw_minutes for item in items), sum(item.late_leave_exempt_minutes for item in items),
                 sum(item.late_minutes for item in items), sum(item.late_grace_minutes for item in items),
                 sum(item.late_chargeable_minutes for item in items),
+                sum(item.company_holiday_overtime_minutes for item in items),
+                sum(item.late_company_holiday_exempt_minutes for item in items),
             ])
             if supplement:
                 _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
@@ -354,6 +376,7 @@ class OvertimeReportWriter:
             "姓名", "UserId", "日期", "加班类型", "审核类型", "实际首个打卡", "实际最后打卡",
             "实际加班分钟", "请假有效分钟", "请假重叠分钟", "审批加班分钟", "差异(分钟)",
             "容差(分钟)", "关联审批单", "审核原因", "需通知HR",
+            "公司放假时段", "公司放假加班分钟", "审批核对范围", "审批核对实际分钟",
         ])
         review_count = 0
         for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
@@ -366,6 +389,10 @@ class OvertimeReportWriter:
                 result.approval_overtime_minutes, result.approval_difference_minutes,
                 self._config.rest_day.approval_difference_tolerance_minutes, result.approval_text,
                 _review_reason(result), "是",
+                result.company_holiday_period, result.company_holiday_overtime_minutes,
+                "仅公司放假时段" if result.overtime_type == "工作日" and result.company_holiday_overtime_minutes else
+                ("当日非工作日加班" if result.overtime_type != "工作日" else "工作日加班不要求审批"),
+                result.company_holiday_overtime_minutes if result.overtime_type == "工作日" and result.company_holiday_overtime_minutes else result.overtime_minutes,
             ])
             _mark_row(sheet[sheet.max_row], AMBER_FILL, AMBER_FONT)
             review_count += 1
@@ -446,7 +473,11 @@ class OvertimeReportWriter:
             ("缺卡处理", "缺少成对有效打卡时不计入加班；明细整行标红并生成待补卡通知"),
             ("请假处理", "按审批起止时间精确到分钟；有效分钟扣除固定午休；同日加班交 HR 审核"),
             ("不扣工资请假类型", "年假、调休"),
-            ("其他请假类型", "默认计入扣工资请假分钟；未知类型保留并标出"),
+            ("其他请假类型", "事假计入扣工资；病假、婚假、通用请假暂不分类并交 HR 审核；未知审批类型报错"),
+            ("外出/出差", "按审批实际区间扣午休计出勤，不计入请假及扣工资请假分钟"),
+            ("请假时间依据", "审批区间逐日裁切，扣固定午休，每天最多工作分钟；不按班次09:30裁切，不采用审批尾部小时数"),
+            ("请假休息日", "休息日和节假日不计请假分钟"),
+            ("输入解析失败", "整体报错并返回非零退出码；列出来源和原始值，不生成本文件的统计结果"),
             (
                 "固定午休",
                 f"{rest_day.fixed_lunch_start:%H:%M}-"
@@ -456,7 +487,8 @@ class OvertimeReportWriter:
             ("非工作日晚餐时段起点", rest_day.dinner_break_start.strftime("%H:%M")),
             ("非工作日晚餐扣除分钟", rest_day.dinner_break_minutes),
             ("额外节假日日期", "、".join(item.isoformat() for item in rest_day.holiday_dates)),
-            ("节假日识别", "配置日期，或工作日日期但班次包含休息关键字"),
+            ("节假日识别", "仅 holiday_dates 明确配置的法定节假日；其余休息班次为休息日"),
+            ("输入月份要求", "同一员工同一自然月须在一份完整文件中；迟到宽限不跨文件分配"),
             ("工作日晚餐扣除分钟", overtime.dinner_break_minutes),
             ("最小加班分钟", overtime.min_overtime_minutes),
             ("取整单位分钟", overtime.rounding_unit_minutes),
@@ -464,7 +496,12 @@ class OvertimeReportWriter:
             ("无效打卡前缀", "、".join(overtime.invalid_punch_prefixes)),
             ("跨午夜归属", "按原始表考勤日期归属前一考勤日"),
             ("工资金额", "当前仅输出扣工资分钟；未配置时薪/日薪，因此不计算金额"),
+            ("公司放假适用", "全员；全天免考勤，半天仅对剩余工作时段核算迟到和请假；法定节假日和原休息班次优先"),
+            ("公司上午放假", "午休结束到岗，原班次下班；上午工作按休息日加班，正常下班加晚餐后另计工作日加班"),
+            ("公司下午放假", "午休开始可下班；之后实际工作按休息日加班扣固定午休及非工作日晚餐，不再叠加工作日加班"),
+            ("公司假审批", "放假期间加班需审批；半天公司假仅比较放假时段分钟；与工作日加班分段取整并汇总"),
         ]
+        rows.extend((f"公司放假 {item.work_date:%Y-%m-%d}", f"{item.period}；{item.note}") for item in self._config.company_holidays)
         sheet.append(["配置项", "值"])
         for row in rows:
             sheet.append(list(row))
@@ -562,8 +599,8 @@ def _overview_row(
         _overview_status(blocking_issue_count, supplement_count, review_count, all_issue_count),
         len(items), sum(item.punch_pair_complete for item in items),
         sum(item.has_overtime for item in items), minutes, round(minutes / 60, 2),
-        sum(item.overtime_minutes for item in items if item.overtime_type == "工作日"),
-        sum(item.overtime_minutes for item in items if item.overtime_type == "休息日"),
+        sum(item.workday_overtime_minutes for item in items),
+        sum(item.rest_day_overtime_minutes for item in items),
         sum(item.overtime_minutes for item in items if item.overtime_type == "节假日"),
         sum(item.overtime_minutes for item in items if _needs_review(item)), supplement_count,
         sum(item.approved_leave_minutes for item in items), effective_leave,
@@ -576,7 +613,7 @@ def _overview_row(
         sum(item.late_chargeable_minutes > 0 for item in items), sum(item.late_chargeable_minutes for item in items),
         review_count, len(anomaly_dates), all_issue_count, blocking_issue_count,
         "待处理" if all_issue_count else "无",
-        sum(bool(item.approved_leave_minutes and item.overtime_minutes) for item in items),
+        sum(bool(item.leave_work_minutes and item.overtime_minutes) for item in items),
     ]
 
 
@@ -597,8 +634,8 @@ def _overview_friendly_row(
     return [
         overtime_minutes,
         round(overtime_minutes / 60, 2),
-        sum(item.overtime_minutes for item in items if item.overtime_type == "工作日"),
-        sum(item.overtime_minutes for item in items if item.overtime_type == "休息日"),
+        sum(item.workday_overtime_minutes for item in items),
+        sum(item.rest_day_overtime_minutes for item in items),
         sum(item.overtime_minutes for item in items if item.overtime_type == "节假日"),
         sum(item.overtime_minutes for item in items if _needs_review(item)),
         sum(item.leave_work_minutes for item in items),
@@ -619,7 +656,11 @@ def _overview_friendly_row(
         all_issue_count,
         blocking_issue_count,
         _overview_status(blocking_issue_count, supplement_count, review_count, all_issue_count),
-        sum(bool(item.approved_leave_minutes and item.overtime_minutes) for item in items),
+        sum(bool(item.leave_work_minutes and item.overtime_minutes) for item in items),
+        sum(item.business_attendance_minutes for item in items),
+        sum(item.leave_unclassified_minutes for item in items),
+        sum(item.company_holiday_overtime_minutes for item in items),
+        sum(item.late_company_holiday_exempt_minutes for item in items),
     ]
 
 
@@ -632,12 +673,14 @@ def _employee_detail_row(
 ) -> list[object]:
     if result is None:
         day_type = _calendar_day_type(work_date, config)
+        holiday = config.company_holiday_on(work_date)
+        exempt = bool(holiday and holiday.period == "全天")
         return [
             work_date, _weekday_text(work_date), "", day_type, "", "", "", "", "", "", "否", "",
-            0, 0, "", "", "", "", 0, 0, 0, 0, 0, "未找到该日期的每日统计记录。", "", "", 0, 0,
+            0, 0, "", "", "", "", 0, 0, 0, 0, 0, "公司全天放假，无需考勤。" if exempt else "未找到该日期的每日统计记录。", "", "", 0, 0,
             *([0] * len(leave_types)), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, "", "", "", "",
-            "缺少每日统计记录", len(day_issues), "待处理" if day_issues else "无", "缺少每日统计记录",
-            "缺少每日统计记录", "",
+            "" if exempt else "缺少每日统计记录", len(day_issues), "待处理" if day_issues else "无", "正常" if exempt else "缺少每日统计记录",
+            "公司放假，免考勤" if exempt else "缺少每日统计记录", "",
         ]
 
     issue_count = len(day_issues)
@@ -684,6 +727,9 @@ def _legacy_detail_row(result: OvertimeResult, config: AppConfig) -> list[object
         result.late_leave_exempt_minutes, result.late_minutes, result.late_occurrence_number,
         result.late_grace_minutes, result.late_chargeable_minutes, result.late_status,
         _calculation_status(result, config), "；".join(result.notes), _calculation_text(result),
+        result.company_holiday_period, result.company_holiday_note, result.company_holiday_overtime_minutes,
+        result.workday_overtime_minutes, result.rest_day_overtime_minutes,
+        result.late_company_holiday_exempt_minutes, result.required_work_minutes,
     ]
 
 
@@ -694,6 +740,9 @@ def _weekday_text(value: date) -> str:
 def _calendar_day_type(value: date, config: AppConfig) -> str:
     if value in config.rest_day.holiday_dates:
         return "节假日"
+    holiday = config.company_holiday_on(value)
+    if holiday:
+        return f"公司放假（{holiday.period}）"
     return "休息日" if value.weekday() >= 5 else "工作日"
 
 
@@ -792,6 +841,18 @@ def _finish_sheet(sheet) -> None:
 
 def _calculation_text(result: OvertimeResult) -> str:
     leave_text = _leave_calculation_text(result)
+    if result.business_attendance_minutes:
+        leave_text += f"；外出/出差按审批区间扣午休计出勤 {result.business_attendance_minutes} 分钟"
+    if result.company_holiday_period == "全天" and not result.has_attendance_signal:
+        return "公司全天放假，免考勤，不计迟到或请假；无实际加班。"
+    if result.company_holiday_period and result.overtime_type == "工作日":
+        return (
+            f"公司{result.company_holiday_period}放假；当天应出勤 {result.required_work_minutes} 分钟，"
+            f"标准下班 {fmt_time(result.standard_end)}；公司放假时段按休息日计 {result.company_holiday_overtime_minutes} 分钟"
+            f"（{fmt_time(result.company_holiday_overtime_start)}至{fmt_time(result.company_holiday_overtime_end)}），"
+            f"工作日加班另计 {result.workday_overtime_minutes} 分钟；合计 {result.overtime_minutes} 分钟；"
+            f"公司放假抵扣迟到 {result.late_company_holiday_exempt_minutes} 分钟，规则后迟到 {result.late_minutes} 分钟{leave_text}。"
+        )
     if result.overtime_type != "工作日" and result.first_clock_in and result.last_clock_out:
         deduction = f"固定午休扣除 {result.lunch_break_minutes} 分钟"
         if result.dinner_break_minutes:
@@ -809,7 +870,7 @@ def _calculation_text(result: OvertimeResult) -> str:
 def _leave_calculation_text(result: OvertimeResult) -> str:
     if not result.approved_leave_minutes:
         return ""
-    text = f"；请假审批区间覆盖 {result.approved_leave_minutes} 分钟，扣午休后有效 {result.leave_work_minutes} 分钟"
+    text = f"；请假审批区间覆盖 {result.approved_leave_minutes} 分钟，按当天区间扣午休并限制日上限后有效 {result.leave_work_minutes} 分钟"
     if result.late_leave_exempt_minutes:
         text += f"，抵扣迟到 {result.late_leave_exempt_minutes} 分钟"
     if result.leave_overlap_minutes:
@@ -825,11 +886,12 @@ def _anomalies_for(result: OvertimeResult, config: AppConfig) -> list[tuple[str,
     supplement_issue = _supplement_punch_issue(result, config)
     if supplement_issue is not None:
         anomalies.append(("待补卡", supplement_issue[1]))
-    if start_missing and not approved_non_punch:
+    company_pair_confirmed = bool(result.company_holiday_period and result.punch_pair_complete)
+    if start_missing and not approved_non_punch and not company_pair_confirmed:
         anomalies.append(("有下班无上班", "每日统计中缺少上班打卡时间，但存在下班打卡时间。"))
-    if end_missing and not approved_non_punch:
+    if end_missing and not approved_non_punch and not company_pair_confirmed:
         anomalies.append(("有上班无下班", "每日统计中存在上班打卡时间，但缺少下班打卡时间。"))
-    if ("缺卡" in result.start_result or "缺卡" in result.end_result) and result.raw_punch_count > 0:
+    if ("缺卡" in result.start_result or "缺卡" in result.end_result) and result.raw_punch_count > 0 and not company_pair_confirmed:
         anomalies.append(("缺卡但有原始记录", "每日统计显示缺卡，但原始记录中存在该员工当天打卡流水。"))
     if result.raw_punch_count > 0 and result.valid_raw_punch_count == 0:
         anomalies.append(("原始记录全部无效", "原始记录存在打卡流水，但都被无效打卡规则排除。"))
@@ -837,10 +899,10 @@ def _anomalies_for(result: OvertimeResult, config: AppConfig) -> list[tuple[str,
         anomalies.append(("审批与实际打卡待审核", result.approval_review_reason))
     if result.leave_review_reason:
         anomalies.append(("请假与加班待审核", result.leave_review_reason))
-    if _is_non_workday(result, config) and result.raw_punch_count > 0 and not config.workday.count_non_workday_overtime:
+    if _is_non_workday(result, config) and result.has_attendance_signal and not config.workday.count_non_workday_overtime:
         anomalies.append(("非工作日有打卡但未统计", "当天为非工作日，配置为不统计非工作日加班。"))
-    has_any_attendance_signal = bool(result.start_time_text or result.end_time_text or result.raw_punch_count)
-    should_expect_punch_pair = bool(result.shift.strip()) and not _is_rest_day(result, config)
+    has_any_attendance_signal = result.has_attendance_signal
+    should_expect_punch_pair = bool(result.shift.strip()) and not _is_non_workday(result, config)
     if any(note == "有效上下班打卡不足" for note in result.notes) and (has_any_attendance_signal or should_expect_punch_pair) and not approved_non_punch and supplement_issue is None:
         anomalies.append(("有效上下班打卡不足", "无法从原始记录或每日统计中得到成对的有效上下班打卡。"))
     if result.leave_overlap_minutes:
@@ -849,15 +911,8 @@ def _anomalies_for(result: OvertimeResult, config: AppConfig) -> list[tuple[str,
 
 
 def _has_approved_non_punch_reason(result: OvertimeResult, config: AppConfig) -> bool:
-    if result.approved_leave_minutes and result.leave_work_minutes >= config.workday.work_minutes:
-        if result.first_clock_in is None and result.last_clock_out is None:
-            return True
-    if not result.approval_text:
-        return False
-    keywords = ("请假", "年假", "事假", "病假", "婚假", "调休", "外出", "出差")
-    return any(keyword in result.approval_text for keyword in keywords) and any(
-        keyword in result.start_result or keyword in result.end_result for keyword in keywords
-    )
+    required = result.required_work_minutes if result.required_work_minutes is not None else config.workday.work_minutes
+    return required > 0 and result.approved_non_punch_minutes >= required
 
 
 def _supplement_punch_issue(result: OvertimeResult, config: AppConfig) -> tuple[str, str] | None:
@@ -877,9 +932,9 @@ def _supplement_punch_issue(result: OvertimeResult, config: AppConfig) -> tuple[
 def _requires_punch_pair(result: OvertimeResult, config: AppConfig) -> bool:
     if not result.shift.strip():
         return False
-    if not _is_rest_day(result, config):
+    if not _is_non_workday(result, config):
         return True
-    return bool(result.raw_punch_count or result.start_time_text or result.end_time_text or "加班" in result.approval_text)
+    return result.has_attendance_signal
 
 
 def _calculation_status(result: OvertimeResult, config: AppConfig) -> str:
@@ -889,6 +944,8 @@ def _calculation_status(result: OvertimeResult, config: AppConfig) -> str:
         return "待审核，暂计"
     if _is_non_workday(result, config) and not config.workday.count_non_workday_overtime:
         return "休息日未统计"
+    if result.company_holiday_period == "全天" and not result.has_attendance_signal:
+        return "公司放假，免考勤"
     if result.first_clock_in is None or result.last_clock_out is None:
         return "未计算"
     return "有效"

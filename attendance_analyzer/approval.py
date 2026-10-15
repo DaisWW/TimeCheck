@@ -1,21 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 import re
 
 
 LEAVE_KEYWORDS = ("请假", "年假", "事假", "病假", "婚假", "调休", "外出", "出差")
-APPROVAL_KEYWORDS = ("加班", *LEAVE_KEYWORDS, "补卡")
-APPROVAL_KEYWORD_RE = re.compile("|".join(APPROVAL_KEYWORDS))
+BUSINESS_ATTENDANCE_TYPES = frozenset({"外出", "出差"})
+APPROVAL_DATE = r"(?:(?:\d{4}-)?\d{1,2}-\d{1,2}|(?:\d{4}/)?\d{1,2}/\d{1,2})"
 APPROVAL_INTERVAL_RE = re.compile(
-    r"(?P<kind>加班|"
+    r"(?P<kind>加班|补卡申请|补卡|"
     + "|".join(LEAVE_KEYWORDS)
     + r")[:：\s]*"
-    r"(?P<start_date>\d{1,2}[-/]\d{1,2})\s*"
+    rf"(?P<start_date>{APPROVAL_DATE})\s*"
     r"(?P<start_time>\d{1,2}:\d{2})\s*到\s*"
-    r"(?P<end_date>\d{1,2}[-/]\d{1,2})\s*"
+    rf"(?P<end_date>{APPROVAL_DATE})\s*"
     r"(?P<end_time>\d{1,2}:\d{2})"
+    r"(?:\s*\d+(?:\.\d+)?(?:小时|分钟|天))?"
 )
 
 
@@ -74,6 +75,8 @@ def overlapping_interval_minutes(
     end: datetime,
     intervals: list[OvertimeApprovalInterval | LeaveApprovalInterval],
 ) -> int:
+    if end <= start:
+        return 0
     overlaps = [
         OvertimeApprovalInterval(start=max(start, interval.start), end=min(end, interval.end))
         for interval in intervals
@@ -90,28 +93,21 @@ def _parse_approval_text(
     issues: list[ApprovalParseIssue] = []
     text = text.strip()
 
-    for keyword_match in APPROVAL_KEYWORD_RE.finditer(text):
-        kind = keyword_match.group()
-        if kind == "补卡":
-            issues.append(
-                ApprovalParseIssue(
-                    kind=kind,
-                    message="存在补卡申请；当前不会自动用审批替代原始打卡，请 HR 确认后补卡并重新统计。",
-                    blocks_summary=False,
-                )
-            )
+    for part in re.split(r"[，,；;\n]+", text):
+        part = part.strip()
+        if not part:
             continue
-
-        interval_match = APPROVAL_INTERVAL_RE.match(text, keyword_match.start())
+        interval_match = APPROVAL_INTERVAL_RE.fullmatch(part)
         if interval_match is None:
             issues.append(
                 ApprovalParseIssue(
-                    kind=kind,
-                    message=f"{kind}审批未找到可解析的起止时间（应为 MM-DD HH:MM到MM-DD HH:MM）。",
+                    kind="未知或格式错误",
+                    message=f"审批无法完整解析：{part!r}。应为已知审批类型 + MM-DD HH:MM到MM-DD HH:MM，可附数字时长；多项用逗号、分号或换行分隔。",
                 )
             )
             continue
 
+        kind = interval_match.group("kind")
         try:
             start = _parse_datetime(
                 interval_match.group("start_date"), interval_match.group("start_time"), year
@@ -128,8 +124,20 @@ def _parse_approval_text(
             )
             continue
 
-        if end <= start:
-            end += timedelta(days=1)
+        supplement = kind in {"补卡", "补卡申请"}
+        if end < start or (end == start and not supplement):
+            issues.append(ApprovalParseIssue(
+                kind=kind,
+                message=f"{kind}审批结束时间必须晚于开始时间；不自动补一天。跨午夜请写次日日期，跨年请写完整年份。",
+            ))
+            continue
+        if supplement:
+            issues.append(ApprovalParseIssue(
+                kind=kind,
+                message="存在补卡申请；当前不会自动用审批替代原始打卡，请 HR 确认后补卡并重新统计。",
+                blocks_summary=False,
+            ))
+            continue
         if kind == "加班":
             overtime.append(OvertimeApprovalInterval(start=start, end=end))
         else:
@@ -139,6 +147,9 @@ def _parse_approval_text(
 
 
 def _parse_datetime(date_text: str, time_text: str, year: int) -> datetime:
-    month_text, day_text = re.split(r"[-/]", date_text)
+    parts = re.split(r"[-/]", date_text)
+    if len(parts) == 3:
+        year = int(parts.pop(0))
+    month_text, day_text = parts
     hour_text, minute_text = time_text.split(":")
     return datetime(year, int(month_text), int(day_text), int(hour_text), int(minute_text))

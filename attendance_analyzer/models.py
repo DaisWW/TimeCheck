@@ -25,6 +25,7 @@ class DailyAttendance:
     end_result: str = ""
     approval_text: str = ""
     source_row: int = 0
+    additional_punches: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ class OvertimeResult:
     end_time_text: str = ""
     end_result: str = ""
     raw_punch_count: int = 0
+    additional_punch_count: int = 0
     valid_raw_punch_count: int = 0
     used_daily_fallback: bool = False
     punch_pair_complete: bool = False
@@ -87,15 +89,24 @@ class OvertimeResult:
     late_grace_minutes: int = 0
     late_chargeable_minutes: int = 0
     late_status: str = ""
-    # Leave minutes are kept in two forms: the raw wall-clock coverage from
-    # the approval interval, and effective minutes after the fixed lunch
-    # break is removed.  The latter is used for payroll classification.
+    # Keep raw approval coverage separate from lunch-excluded minutes.
+    # Leave and business attendance do not consume minutes on rest days.
     leave_work_minutes: int = 0
     leave_minutes_by_type: dict[str, int] = field(default_factory=dict)
     leave_non_deductible_minutes: int = 0
     leave_deductible_minutes: int = 0
+    leave_unclassified_minutes: int = 0
+    business_attendance_minutes: int = 0
+    approved_non_punch_minutes: int = 0
     leave_overlap_minutes: int = 0
     leave_overlap_types: str = ""
+    company_holiday_period: str = ""
+    company_holiday_note: str = ""
+    company_holiday_overtime_minutes: int = 0
+    company_holiday_overtime_start: datetime | None = None
+    company_holiday_overtime_end: datetime | None = None
+    late_company_holiday_exempt_minutes: int = 0
+    required_work_minutes: int | None = None
     source_row: int = 0
     notes: list[str] = field(default_factory=list)
 
@@ -106,3 +117,21 @@ class OvertimeResult:
     @property
     def has_overtime(self) -> bool:
         return self.overtime_minutes > 0
+
+    @property
+    def has_attendance_signal(self) -> bool:
+        return bool(
+            self.raw_punch_count or self.additional_punch_count
+            or self.start_time_text or self.end_time_text
+            or self.first_clock_in or self.last_clock_out or "加班" in self.approval_text
+        )
+
+    @property
+    def workday_overtime_minutes(self) -> int:
+        return self.overtime_minutes - self.company_holiday_overtime_minutes if self.overtime_type == "工作日" else 0
+
+    @property
+    def rest_day_overtime_minutes(self) -> int:
+        if self.overtime_type == "休息日":
+            return self.overtime_minutes
+        return self.company_holiday_overtime_minutes if self.overtime_type == "工作日" else 0
