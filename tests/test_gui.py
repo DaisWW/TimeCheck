@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import Mock, call, patch
 
 from attendance_analyzer import gui
+from attendance_analyzer.config import AppConfig
 from attendance_analyzer.excel_reader import WorkbookInputError
 from attendance_analyzer.models import InputIssue
 
@@ -22,14 +23,14 @@ class GuiPathsTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             paths, warning = gui.load_window_paths(root, self.args())
-            self.assertEqual(paths, {"input": str(root / "input"), "output": str(root / "output"), "config": str(root / "config.csv")})
+            self.assertEqual(paths, {"input": str(root / "input"), "output": str(root / "output"), "config": str(root / "config.json")})
             self.assertFalse(warning)
             self.assertFalse((root / "window_paths.json").exists())
 
     def test_round_trip_restores_unicode_paths_including_missing_config(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            selected = {"input": str(root / "每月考勤"), "output": str(root / "统计 结果"), "config": str(root / "自选规则/规则.csv")}
+            selected = {"input": str(root / "每月考勤"), "output": str(root / "统计 结果"), "config": str(root / "自选规则/规则.json")}
             gui.save_window_paths(root, selected)
             paths, warning = gui.load_window_paths(root, self.args())
             self.assertEqual(paths, selected)
@@ -56,7 +57,7 @@ class GuiPathsTest(unittest.TestCase):
                 with self.subTest(value=value):
                     (root / "window_paths.json").write_text(value, encoding="utf-8")
                     paths, warning = gui.load_window_paths(root, self.args())
-                    self.assertEqual(paths["config"], str(root / "config.csv"))
+                    self.assertEqual(paths["config"], str(root / "config.json"))
                     self.assertIn("window_paths.json", warning)
                     self.assertIn("请检查并重新选择", warning)
                     self.assertEqual((root / "window_paths.json").read_text(encoding="utf-8"), value)
@@ -75,8 +76,8 @@ class GuiPathsTest(unittest.TestCase):
     def test_missing_restored_config_is_reported_instead_of_using_adjacent_config(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "config.csv").write_text("分类,配置项,值,说明\n工作日,每日工作分钟,450,\n", encoding="utf-8-sig")
-            selected = {"input": str(root / "input"), "output": str(root / "output"), "config": str(root / "已移走/config.csv")}
+            AppConfig().save(root / "config.json")
+            selected = {"input": str(root / "input"), "output": str(root / "output"), "config": str(root / "已移走/config.json")}
             gui.save_window_paths(root, selected)
             paths, _ = gui.load_window_paths(root, self.args())
             events = Queue()
@@ -122,25 +123,25 @@ class GuiDirectoryTest(unittest.TestCase):
 
 
 class GuiJobTest(unittest.TestCase):
-    def test_missing_csv_stops_before_analysis_and_saves_readable_log(self):
+    def test_missing_json_stops_before_analysis_and_saves_readable_log(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             events = Queue()
             outer_output = io.StringIO()
             with patch("attendance_analyzer.cli.AttendanceAnalyzer") as analyzer, redirect_stdout(outer_output):
-                gui.run_job(root / "input", root / "output", root / "config.csv", root / "logs", events)
+                gui.run_job(root / "input", root / "output", root / "config.json", root / "logs", events)
                 print("stdout restored")
             analyzer.assert_not_called()
             items = drain(events)
             self.assertEqual(items[-1][0:2], ("finished", 2))
-            self.assertIn("config.csv", items[-1][2].read_text(encoding="utf-8-sig"))
+            self.assertIn("config.json", items[-1][2].read_text(encoding="utf-8-sig"))
             self.assertEqual(outer_output.getvalue(), "stdout restored\n")
 
     def test_batch_reports_progress_and_stops_on_invalid_file_with_source_detail(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = root / "config.csv"
-            config.write_text("分类,配置项,值,说明\n工作日,每日工作分钟,450,\n", encoding="utf-8-sig")
+            config = root / "config.json"
+            AppConfig().save(config)
             input_dir = root / "input"
             input_dir.mkdir()
             paths = [input_dir / f"{index}月.xlsx" for index in range(1, 4)]
@@ -167,8 +168,8 @@ class GuiJobTest(unittest.TestCase):
     def test_directory_success_processes_all_workbooks_into_selected_output_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config = root / "config.csv"
-            config.write_text("分类,配置项,值,说明\n工作日,每日工作分钟,450,\n", encoding="utf-8-sig")
+            config = root / "config.json"
+            AppConfig().save(config)
             input_dir = root / "每月 考勤"
             input_dir.mkdir()
             inputs = [input_dir / "一月.xlsx", input_dir / "二月.xlsm"]
@@ -194,7 +195,7 @@ class GuiJobTest(unittest.TestCase):
             root = Path(directory)
             events = Queue()
             with patch("attendance_analyzer.gui.cli.main", side_effect=RuntimeError("unexpected detail")):
-                gui.run_job(root / "input", root / "output", root / "config.csv", root / "logs", events)
+                gui.run_job(root / "input", root / "output", root / "config.json", root / "logs", events)
             items = drain(events)
             self.assertEqual(items[-1][0:2], ("finished", 5))
             self.assertIn("unexpected detail", items[-1][2].read_text(encoding="utf-8-sig"))
@@ -207,7 +208,7 @@ class GuiJobTest(unittest.TestCase):
             blocked.write_text("file blocks directory", encoding="utf-8")
             events = Queue()
             with patch("attendance_analyzer.gui.cli.main") as main:
-                gui.run_job(root / "input", root / "output", root / "config.csv", blocked, events)
+                gui.run_job(root / "input", root / "output", root / "config.json", blocked, events)
             main.assert_not_called()
             items = drain(events)
             self.assertIn("无法保存运行日志", items[0][1])

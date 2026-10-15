@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import csv
 from dataclasses import dataclass
 from datetime import date
-import io
-from pathlib import Path
 import re
-import sys
 
 
 @dataclass(frozen=True)
@@ -16,49 +12,31 @@ class CompanyHoliday:
     note: str = ""
 
 
-def find_company_holidays(config_path: Path | None) -> Path | None:
-    directories = (config_path.parent,) if config_path else (Path.cwd(), Path(sys.executable).resolve().parent)
-    return next((directory / "公司放假.csv" for directory in directories if (directory / "公司放假.csv").exists()), None)
+PERIODS = ("全天", "上午", "下午")
 
 
-def load_company_holidays(path: Path | None) -> tuple[CompanyHoliday, ...]:
-    if path is None:
-        return ()
-    content = path.read_bytes()
-    try:
-        text = content.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        try:
-            text = content.decode("gb18030")
-        except UnicodeDecodeError as error:
-            raise ValueError(f"{path}：无法解码，请另存为 CSV UTF-8（逗号分隔）") from error
-    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+def parse_company_holidays(values) -> tuple[CompanyHoliday, ...]:
+    if not isinstance(values, list):
+        raise ValueError(f"company_holidays 必须是公司放假列表；原值 {values!r}")
     entries: dict[date, CompanyHoliday] = {}
     source_rows: dict[date, int] = {}
-    try:
-        header = [cell.strip() for cell in next(reader, [])]
-        if len(header) != 3 or set(header) != {"日期", "时段", "备注"}:
-            raise ValueError(f"{path} 第 1 行：表头必须为 日期,时段,备注；原值 {header!r}")
-        for row in reader:
-            if not any(cell.strip() for cell in row):
-                continue
-            source = f"{path} 第 {reader.line_num} 行，原值 {row!r}"
-            if len(row) != 3:
-                raise ValueError(f"{source}：必须有3列，每行只配置一个日期")
-            values = dict(zip(header, (cell.strip() for cell in row)))
-            date_text = values["日期"]
-            if re.fullmatch(r"[0-9]{4}([-/])[0-9]{1,2}\1[0-9]{1,2}", date_text) is None:
-                raise ValueError(f"{source}：日期必须为 YYYY-MM-DD，例如 2026-10-16")
-            try:
-                work_date = date(*(int(part) for part in re.split(r"[-/]", date_text)))
-            except ValueError as error:
-                raise ValueError(f"{source}：非法日期 {date_text!r}") from error
-            if values["时段"] not in {"全天", "上午", "下午"}:
-                raise ValueError(f"{source}：时段只能填写 全天、上午 或 下午")
-            if work_date in entries:
-                raise ValueError(f"{source}：同一日期重复或冲突，首次配置在第 {source_rows[work_date]} 行；整天放假请只填一行全天")
-            entries[work_date] = CompanyHoliday(work_date, values["时段"], values["备注"])
-            source_rows[work_date] = reader.line_num
-    except csv.Error as error:
-        raise ValueError(f"{path} 第 {reader.line_num} 行：CSV 格式错误：{error}") from error
+    for index, row in enumerate(values, 1):
+        source = f"公司放假第 {index} 项（company_holidays[{index - 1}]），原值 {row!r}"
+        if not isinstance(row, dict) or set(row) != {"date", "period", "note"}:
+            raise ValueError(f"{source}：每项必须包含 date、period、note")
+        date_text = row["date"]
+        if not isinstance(date_text, str) or re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}", date_text) is None:
+            raise ValueError(f"{source}：日期必须为 YYYY-MM-DD，例如 2026-10-16")
+        try:
+            work_date = date.fromisoformat(date_text)
+        except ValueError as error:
+            raise ValueError(f"{source}：非法日期 {date_text!r}") from error
+        if row["period"] not in PERIODS:
+            raise ValueError(f"{source}：时段只能选择 全天、上午 或 下午")
+        if not isinstance(row["note"], str):
+            raise ValueError(f"{source}：备注必须是文字")
+        if work_date in entries:
+            raise ValueError(f"{source}：同一日期重复或冲突，首次配置在第 {source_rows[work_date]} 项；整天放假请只填一项全天")
+        entries[work_date] = CompanyHoliday(work_date, row["period"], row["note"])
+        source_rows[work_date] = index
     return tuple(entries[key] for key in sorted(entries))

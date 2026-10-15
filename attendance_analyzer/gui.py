@@ -17,10 +17,12 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from . import cli
+from .config import AppConfig
+from .config_editor import CompanyHolidayEditor, RulesEditor
 
 
 def load_window_paths(base_dir: Path, args: argparse.Namespace) -> tuple[dict[str, str], str]:
-    defaults = {"input": base_dir / "input", "output": base_dir / "output", "config": base_dir / "config.csv"}
+    defaults = {"input": base_dir / "input", "output": base_dir / "output", "config": base_dir / "config.json"}
     settings_path = base_dir / "window_paths.json"
     saved = {}
     warning = ""
@@ -166,16 +168,16 @@ class AttendanceWindow:
         ttk.Label(frame, text="路径会自动记住；每次统计新建一个带时间的结果目录。").grid(
             row=4, column=1, columnspan=3, sticky="w"
         )
-        config_frame = ttk.LabelFrame(frame, text="规则配置：保存 CSV 后再开始统计", padding=10)
+        config_frame = ttk.LabelFrame(frame, text="规则配置：在窗口中修改并保存后再统计", padding=10)
         config_frame.grid(row=5, column=0, columnspan=4, sticky="ew", pady=16)
         config_frame.columnconfigure(0, weight=1)
         ttk.Label(config_frame, textvariable=self.config_value, wraplength=680).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        config_button = ttk.Button(config_frame, text="选择规则 CSV", command=self.select_config)
+        config_button = ttk.Button(config_frame, text="选择配置文件", command=self.select_config)
         config_button.grid(row=1, column=0, sticky="w")
-        rules_button = ttk.Button(config_frame, text="编辑考勤规则", command=lambda: self.open_path(self.config_path))
+        rules_button = ttk.Button(config_frame, text="编辑考勤规则", command=lambda: self.edit_config(RulesEditor))
         rules_button.grid(row=1, column=1, padx=(8, 0))
         holidays_button = ttk.Button(
-            config_frame, text="编辑公司放假", command=lambda: self.open_path(self.config_path.parent / "公司放假.csv")
+            config_frame, text="编辑公司放假", command=lambda: self.edit_config(CompanyHolidayEditor)
         )
         holidays_button.grid(row=1, column=2, padx=(8, 0))
         actions = ttk.Frame(frame)
@@ -218,11 +220,24 @@ class AttendanceWindow:
             self.remember_paths()
 
     def select_config(self) -> None:
-        path = filedialog.askopenfilename(title="选择考勤规则 CSV", filetypes=[("CSV 配置文件", "*.csv")])
+        path = filedialog.askopenfilename(title="选择考勤配置文件", filetypes=[("JSON 配置文件", "*.json")])
         if path:
             self.config_path = Path(path).resolve()
             self.config_value.set(str(self.config_path))
             self.remember_paths()
+
+    def edit_config(self, editor_type) -> None:
+        if self.running:
+            return
+        try:
+            config = AppConfig.load(self.config_path)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("无法编辑配置", f"{error}\n请通过“选择配置文件”选择有效的 JSON 配置。", parent=self.root)
+            return
+        editor = editor_type(self.root, self.config_path, config)
+        self.root.wait_window(editor)
+        if editor.saved:
+            self.status.set("配置已保存，下次统计将使用新设置。")
 
     def remember_paths(self) -> None:
         values = {"input": self.input_value.get().strip(), "output": self.output_value.get().strip(), "config": str(self.config_path)}
@@ -333,7 +348,7 @@ class AttendanceWindow:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="钉钉考勤统计窗口")
     parser.add_argument("input", nargs="?", help="预先选择考勤输入目录，批量处理目录第一层的 Excel")
-    parser.add_argument("-c", "--config", help="CSV 基础配置路径")
+    parser.add_argument("-c", "--config", help="JSON 配置文件路径")
     parser.add_argument("-o", "--output", help="结果保存目录")
     args = parser.parse_args(argv)
     base_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]

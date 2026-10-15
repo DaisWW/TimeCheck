@@ -12,10 +12,9 @@ class PackagingTest(unittest.TestCase):
             root = Path(directory) / "中文 发布目录"
             root.mkdir()
             required = {
-                f"{root.name}.exe", "config.csv", "公司放假.csv", "使用说明.txt",
-                "配置模板/config.csv", "配置模板/公司放假.csv",
+                f"{root.name}.exe", "config.json", "使用说明.txt", "配置模板/config.json",
             }
-            for filename in required | {"input/真实考勤.xlsx", "output/工资.xlsx", "logs/个人数据.log", "config.toml", "window_paths.json"}:
+            for filename in required | {"input/真实考勤.xlsx", "output/工资.xlsx", "logs/个人数据.log", "config.toml", "config.csv", "公司放假.csv", "window_paths.json"}:
                 path = root / filename
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"placeholder")

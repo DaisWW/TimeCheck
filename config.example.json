@@ -1,0 +1,39 @@
+{
+  "sheets": {
+    "daily_sheet": "每日统计",
+    "raw_sheet": "原始记录"
+  },
+  "workday": {
+    "flex_start_begin": "09:00:00",
+    "flex_start_end": "10:00:00",
+    "work_minutes": 450,
+    "lunch_break_minutes": 90,
+    "late_grace_occurrences_per_month": 3,
+    "late_grace_minutes_per_month": 30,
+    "count_non_workday_overtime": true,
+    "rest_shift_keywords": [
+      "休息"
+    ]
+  },
+  "overtime": {
+    "dinner_break_minutes": 30,
+    "min_overtime_minutes": 1,
+    "rounding_unit_minutes": 1,
+    "rounding_mode": "floor",
+    "invalid_punch_prefixes": [
+      "打卡无效"
+    ]
+  },
+  "rest_day": {
+    "fixed_lunch_start": "12:00:00",
+    "fixed_lunch_minutes": 90,
+    "approval_difference_tolerance_minutes": 30,
+    "holiday_dates": [],
+    "dinner_break_start": "18:30:00",
+    "dinner_break_minutes": 0
+  },
+  "report": {
+    "output_suffix": "_加班分析.xlsx"
+  },
+  "company_holidays": []
+}

@@ -9,7 +9,6 @@ from zipfile import BadZipFile
 from openpyxl.utils.exceptions import InvalidFileException
 
 from .analyzer import AttendanceAnalyzer
-from .company_calendar import find_company_holidays
 from .config import AppConfig, find_default_config
 from .report_writer import OvertimeReportWriter
 
@@ -21,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="钉钉考勤 Excel 或输入目录。未指定时批量分析 ./input。",
     )
-    parser.add_argument("-c", "--config", help="CSV 配置文件路径。未指定时读取当前目录或 EXE 所在目录的 config.csv。")
+    parser.add_argument("-c", "--config", help="JSON 配置文件路径。未指定时读取当前目录或 EXE 所在目录的 config.json。")
     parser.add_argument(
         "-o",
         "--output",
@@ -45,11 +44,7 @@ def main(
         print(f"配置错误（{config_path}）：{error}", file=sys.stderr)
         return 2
     print(f"使用配置：{config_path.resolve()}" if config_path else "使用内置默认配置")
-    company_holidays_path = find_company_holidays(config_path)
-    print(
-        f"公司放假配置：{company_holidays_path.resolve()}（{len(config.company_holidays)} 天）"
-        if company_holidays_path else "公司放假配置：未配置"
-    )
+    print(f"公司放假安排：{len(config.company_holidays)} 天（保存在同一份配置中）")
 
     if args.input:
         input_path = Path(args.input).expanduser().resolve()

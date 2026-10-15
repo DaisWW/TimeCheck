@@ -21,9 +21,9 @@ try {
         throw "Python dependency installation failed with exit code $LASTEXITCODE"
     }
 
-    & $Python -X utf8 -c "from pathlib import Path; from attendance_analyzer.config import AppConfig; AppConfig.load(Path('config.csv')); import tkinter; print('CSV configuration and Tk runtime OK')"
+    & $Python -X utf8 -c "from pathlib import Path; from attendance_analyzer.config import AppConfig; AppConfig.load(Path('config.json')); import tkinter; print('JSON configuration and Tk runtime OK')"
     if ($LASTEXITCODE -ne 0) {
-        throw "Build preflight failed. Check CSV files and install Python with Tcl/Tk support."
+        throw "Build preflight failed. Check the JSON configuration and install Python with Tcl/Tk support."
     }
     & $Python -X utf8 -m unittest discover -s tests
     if ($LASTEXITCODE -ne 0) {
@@ -46,7 +46,7 @@ try {
         throw "PyInstaller build failed with exit code $LASTEXITCODE"
     }
 
-    foreach ($legacyConfigName in @("config.toml", "config.example.toml", "config.example.csv", "公司放假.example.csv", "run_attendance.bat")) {
+    foreach ($legacyConfigName in @("config.toml", "config.example.toml", "config.csv", "公司放假.csv", "config.example.csv", "公司放假.example.csv", "run_attendance.bat", "配置模板/config.csv", "配置模板/公司放假.csv")) {
         $legacyConfigPath = Join-Path $releaseDir $legacyConfigName
         if (Test-Path -LiteralPath $legacyConfigPath -PathType Leaf) {
             Remove-Item -LiteralPath $legacyConfigPath -Force
@@ -54,10 +54,8 @@ try {
     }
     $templatesDir = Join-Path $releaseDir "配置模板"
     New-Item -ItemType Directory -Force -Path $templatesDir | Out-Null
-    Copy-Item (Join-Path $repoRoot "config.csv") (Join-Path $releaseDir "config.csv") -Force
-    Copy-Item (Join-Path $repoRoot "config.example.csv") (Join-Path $templatesDir "config.csv") -Force
-    Copy-Item (Join-Path $repoRoot "公司放假.csv") (Join-Path $releaseDir "公司放假.csv") -Force
-    Copy-Item (Join-Path $repoRoot "公司放假.example.csv") (Join-Path $templatesDir "公司放假.csv") -Force
+    Copy-Item (Join-Path $repoRoot "config.json") (Join-Path $releaseDir "config.json") -Force
+    Copy-Item (Join-Path $repoRoot "config.example.json") (Join-Path $templatesDir "config.json") -Force
     Copy-Item (Join-Path $repoRoot "docs\HR使用说明.txt") (Join-Path $releaseDir "使用说明.txt") -Force
     New-Item -ItemType Directory -Force -Path (Join-Path $releaseDir "input"), (Join-Path $releaseDir "output"), (Join-Path $releaseDir "logs") | Out-Null
 

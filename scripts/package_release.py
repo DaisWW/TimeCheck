@@ -9,11 +9,9 @@ def create_release_zip(release_dir: Path) -> Path:
     release_dir = release_dir.resolve()
     files = [
         f"{release_dir.name}.exe",
-        "config.csv",
-        "公司放假.csv",
+        "config.json",
         "使用说明.txt",
-        "配置模板/config.csv",
-        "配置模板/公司放假.csv",
+        "配置模板/config.json",
     ]
     for filename in files:
         if not (release_dir / filename).is_file():

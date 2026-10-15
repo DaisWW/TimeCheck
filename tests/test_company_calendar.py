@@ -1,5 +1,6 @@
 from datetime import date, datetime, time
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -8,7 +9,7 @@ from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
 
 from attendance_analyzer import cli
-from attendance_analyzer.company_calendar import CompanyHoliday, load_company_holidays
+from attendance_analyzer.company_calendar import CompanyHoliday
 from attendance_analyzer.config import AppConfig, RestDayConfig, WorkdayConfig
 from attendance_analyzer.models import DailyAttendance, PunchRecord
 from attendance_analyzer.report_writer import OvertimeReportWriter, _supplement_punch_issue
@@ -33,73 +34,71 @@ def calculate(period, start=None, end=None, approval="", **config_overrides):
 
 
 class CompanyCalendarInputTest(unittest.TestCase):
-    def test_loads_next_to_explicit_config_and_preserves_chinese_encodings(self):
-        for encoding in ("utf-8-sig", "gbk"):
-            with self.subTest(encoding=encoding), tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
-                path = root / "config.csv"
-                path.write_text("分类,配置项,值,说明\n工作日,每日工作分钟,450,\n", encoding="utf-8-sig")
-                (root / "公司放假.csv").write_text(
-                    "日期,时段,备注\n2026/10/20,下午,活动\n2026-10-19,上午,\n", encoding=encoding
-                )
-                config = AppConfig.load(path)
-                self.assertEqual(config.company_holidays, (
-                    CompanyHoliday(DAY, "上午"), CompanyHoliday(date(2026, 10, 20), "下午", "活动"),
-                ))
-                with patch("attendance_analyzer.company_calendar.Path.cwd", return_value=root):
-                    self.assertEqual(AppConfig.load(None).company_holidays, config.company_holidays)
+    def test_single_json_loads_and_sorts_company_holidays(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.json"
+            data = AppConfig().to_dict()
+            data["company_holidays"] = [
+                {"date": "2026-10-20", "period": "下午", "note": "活动"},
+                {"date": "2026-10-19", "period": "上午", "note": ""},
+            ]
+            path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            self.assertEqual(AppConfig.load(path).company_holidays, (
+                CompanyHoliday(DAY, "上午"), CompanyHoliday(date(2026, 10, 20), "下午", "活动"),
+            ))
 
-    def test_empty_calendar_is_allowed_and_example_is_not_automatically_loaded(self):
+    def test_empty_calendar_does_not_load_examples_or_legacy_companion_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config_path = root / "config.csv"
-            config_path.write_text("分类,配置项,值,说明\n工作日,每日工作分钟,450,\n", encoding="utf-8-sig")
-            (root / "公司放假.example.csv").write_text("日期,时段,备注\n2026-10-19,全天,示例\n", encoding="utf-8")
+            config_path = root / "config.json"
+            AppConfig().save(config_path)
+            for name in ("公司放假.csv", "公司放假.example.csv"):
+                (root / name).write_text("日期,时段,备注\n2026-10-19,全天,示例\n", encoding="utf-8")
             self.assertEqual(AppConfig.load(config_path).company_holidays, ())
-            (root / "公司放假.csv").write_text("日期,时段,备注\n\n", encoding="utf-8-sig")
-            self.assertEqual(AppConfig.load(config_path).company_holidays, ())
+            self.assertEqual(AppConfig.load(None).company_holidays, ())
 
-    def test_bad_dates_periods_duplicates_and_columns_report_source(self):
+    def test_bad_dates_periods_duplicates_types_and_fields_report_source(self):
+        valid = {"date": "2026-10-19", "period": "上午", "note": ""}
         cases = (
-            ("2026-02-30,上午,", "非法日期"),
-            ("26-10-19,全天,", "YYYY-MM-DD"),
-            ("2026-10-19备注,全天,", "YYYY-MM-DD"),
-            ("2026-10-19,半天,", "时段"),
-            ("2026-10-19,上午,\n2026-10-19,下午,", "重复或冲突"),
-            ("2026-10-19,全天", "3列"),
+            ([valid | {"date": "2026-02-30"}], "非法日期"),
+            ([valid | {"date": "26-10-19"}], "YYYY-MM-DD"),
+            ([valid | {"date": "2026-10-19备注"}], "YYYY-MM-DD"),
+            ([valid | {"period": "半天"}], "时段"),
+            ([valid, valid | {"period": "下午"}], "重复或冲突"),
+            ([{"date": "2026-10-19", "period": "全天"}], "必须包含"),
+            ([valid | {"note": 3}], "备注"),
+            ([valid | {"unexpected": True}], "必须包含"),
+            ({}, "列表"),
         )
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "公司放假.csv"
-            for row, reason in cases:
-                with self.subTest(row=row):
-                    path.write_text(f"日期,时段,备注\n{row}\n", encoding="utf-8-sig")
+            path = Path(directory) / "config.json"
+            for entries, reason in cases:
+                with self.subTest(entries=entries):
+                    data = AppConfig().to_dict()
+                    data["company_holidays"] = entries
+                    path.write_text(json.dumps(data), encoding="utf-8")
                     with self.assertRaises(ValueError) as raised:
-                        load_company_holidays(path)
-                    for fragment in (str(path), "第 ", "行", "原值", reason):
+                        AppConfig.load(path)
+                    for fragment in (str(path), "company_holidays", "原值", reason):
                         self.assertIn(fragment, str(raised.exception))
-            path.write_text("日期,时段,时段\n", encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "表头"):
-                load_company_holidays(path)
 
     def test_invalid_calendar_stops_cli_before_reading_input(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            config = root / "config.csv"
-            config.write_text("分类,配置项,值,说明\n工作日,每日工作分钟,450,\n", encoding="utf-8-sig")
-            (root / "公司放假.csv").write_text("日期,时段,备注\n2026-10-19,夜里,\n", encoding="utf-8")
+            config = Path(directory) / "config.json"
+            data = AppConfig().to_dict()
+            data["company_holidays"] = [{"date": "2026-10-19", "period": "夜里", "note": ""}]
+            config.write_text(json.dumps(data), encoding="utf-8")
             with patch("attendance_analyzer.cli.AttendanceAnalyzer") as analyzer, patch("sys.stderr", new_callable=io.StringIO) as stderr:
                 code = cli.main(["-c", str(config)])
             self.assertEqual(code, 2)
             analyzer.assert_not_called()
-            self.assertIn("公司放假.csv 第 2 行", stderr.getvalue())
+            self.assertIn("company_holidays[0]", stderr.getvalue())
 
-    def test_cli_applies_hr_csv_to_workbook_and_monthly_grace(self):
+    def test_cli_applies_hr_json_to_workbook_and_monthly_grace(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            config_path = root / "config.csv"
-            config_path.write_text("分类,配置项,值,说明\n工作日,每日工作分钟,450,\n", encoding="utf-8-sig")
-            calendar_path = root / "公司放假.csv"
-            calendar_path.write_text("日期,时段,备注\n2026-10-19,上午,公司活动\n", encoding="utf-8-sig")
+            config_path = root / "config.json"
+            calendar_config("上午").save(config_path)
             input_path = root / "考勤.xlsx"
             output_path = root / "结果.xlsx"
             workbook = Workbook()
@@ -121,7 +120,7 @@ class CompanyCalendarInputTest(unittest.TestCase):
             with patch("sys.stdout", new_callable=io.StringIO) as stdout:
                 code = cli.main([str(input_path), "-c", str(config_path), "-o", str(output_path)])
             self.assertEqual(code, 0)
-            self.assertIn(str(calendar_path), stdout.getvalue())
+            self.assertIn(str(config_path), stdout.getvalue())
             result = load_workbook(output_path, data_only=True)
             try:
                 row = {cell.value: result["Alice"].cell(2, cell.column).value for cell in result["Alice"][1]}

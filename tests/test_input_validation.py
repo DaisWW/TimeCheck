@@ -113,9 +113,9 @@ class InputValidationTest(unittest.TestCase):
             parse_time("09:30 trailing")
 
     def test_config_rejects_coercion_and_unknown_keys(self):
-        for row in ("工作日,统计非工作日加班,随便,", "加班,工作日晚餐扣除分钟,2.5,", "工作日,每日工作分,450,"):
-            with self.subTest(row=row), tempfile.TemporaryDirectory() as directory:
-                path = Path(directory) / "config.csv"
-                path.write_text(f"分类,配置项,值,说明\n{row}\n", encoding="utf-8-sig")
+        for section, key, value in (("workday", "count_non_workday_overtime", "随便"), ("overtime", "dinner_break_minutes", 2.5), ("workday", "work_minute", 450)):
+            with self.subTest(key=key):
+                data = AppConfig().to_dict()
+                data[section][key] = value
                 with self.assertRaises(ValueError):
-                    AppConfig.load(path)
+                    AppConfig.from_dict(data)

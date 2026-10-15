@@ -1,5 +1,7 @@
 from pathlib import Path
 import io
+import json
+from dataclasses import replace
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -127,13 +129,14 @@ class CliTest(unittest.TestCase):
         self.assertIn("disk full", stderr.getvalue())
         self.assertIn("剩余空间", stderr.getvalue())
 
-    def test_default_csv_reaches_analyzer_and_reports_selected_config(self):
+    def test_default_json_reaches_analyzer_and_reports_selected_config(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             input_path = root / "考勤.xlsx"
             input_path.write_bytes(b"placeholder")
-            config_path = root / "config.csv"
-            config_path.write_text("分类,配置项,值,说明\n工作日,每日工作分钟,420,7小时\n", encoding="utf-8-sig")
+            config_path = root / "config.json"
+            defaults = AppConfig()
+            replace(defaults, workday=replace(defaults.workday, work_minutes=420)).save(config_path)
             with (
                 patch("attendance_analyzer.cli.Path.cwd", return_value=root),
                 patch("attendance_analyzer.cli.AttendanceAnalyzer") as analyzer_class,
@@ -147,10 +150,12 @@ class CliTest(unittest.TestCase):
             self.assertEqual(analyzer_class.call_args.args[0].workday.work_minutes, 420)
             self.assertIn(str(config_path), stdout.getvalue())
 
-    def test_invalid_csv_stops_analysis(self):
+    def test_invalid_json_stops_analysis(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
-            (root / "config.csv").write_text("分类,配置项,值,说明\n工作日,每日工作分钟,7.5,\n", encoding="utf-8-sig")
+            data = AppConfig().to_dict()
+            data["workday"]["work_minutes"] = 7.5
+            (root / "config.json").write_text(json.dumps(data), encoding="utf-8")
             with (
                 patch("attendance_analyzer.cli.Path.cwd", return_value=root),
                 patch("attendance_analyzer.cli.AttendanceAnalyzer") as analyzer_class,
@@ -161,7 +166,7 @@ class CliTest(unittest.TestCase):
             self.assertEqual(code, 2)
             analyzer_class.assert_not_called()
             writer_class.assert_not_called()
-            for fragment in ("config.csv", "第 2 行", "7.5"):
+            for fragment in ("config.json", "workday.work_minutes", "7.5"):
                 self.assertIn(fragment, stderr.getvalue())
 
     def test_explicit_toml_is_rejected_before_analysis(self):
@@ -178,7 +183,7 @@ class CliTest(unittest.TestCase):
             analyzer_class.assert_not_called()
             writer_class.assert_not_called()
             self.assertIn(str(config_path), stderr.getvalue())
-            self.assertIn("仅支持 .csv", stderr.getvalue())
+            self.assertIn("仅支持 .json", stderr.getvalue())
 
 
 if __name__ == "__main__":
