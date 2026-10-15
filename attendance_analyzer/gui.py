@@ -4,56 +4,31 @@ import argparse
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 import io
-import json
 import os
 from pathlib import Path
 from queue import Empty, Queue
 import sys
-import tempfile
+import sysconfig
 from threading import Thread
 import traceback
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
+from tkinterdnd2 import COPY, DND_FILES, REFUSE_DROP, TkinterDnD
+
 from . import cli
 from .config import AppConfig
 from .config_editor import CompanyHolidayEditor, RulesEditor
+from .file_manager import copy_input, is_link, list_entries, managed_path, prepare_import, recycle_entries
 
 
-def load_window_paths(base_dir: Path, args: argparse.Namespace) -> tuple[dict[str, str], str]:
-    defaults = {"input": base_dir / "input", "output": base_dir / "output", "config": base_dir / "config.json"}
-    settings_path = base_dir / "window_paths.json"
-    saved = {}
-    warning = ""
-    try:
-        saved = json.loads(settings_path.read_text(encoding="utf-8"))
-        if not isinstance(saved, dict) or saved.keys() != defaults.keys() or any(
-            not isinstance(value, str) or not value.strip() or "\0" in value or not Path(value).is_absolute()
-            for value in saved.values()
-        ):
-            raise ValueError("路径记录必须包含 input、output、config 三个完整路径")
-    except FileNotFoundError:
-        pass
-    except (OSError, ValueError) as error:
-        saved = {}
-        warning = f"无法恢复上次路径：{settings_path}\n{error}\n已显示启动参数或默认路径，请检查并重新选择后再统计。"
-    return {
-        key: str(Path(getattr(args, key) or saved.get(key) or value).expanduser().resolve())
-        for key, value in defaults.items()
-    }, warning
-
-
-def save_window_paths(base_dir: Path, paths: dict[str, str]) -> None:
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=base_dir, prefix="window_paths_", suffix=".tmp", delete=False) as stream:
-            temporary = Path(stream.name)
-            json.dump(paths, stream, ensure_ascii=False, indent=2)
-        temporary.replace(base_dir / "window_paths.json")
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+def create_root() -> tk.Tk:
+    # 部分启动器会清理架构环境变量；拖放组件需要当前 Python 的架构。
+    if sys.platform == "win32":
+        architecture = "ARM64" if sysconfig.get_platform() == "win-arm64" else "AMD64" if sys.maxsize > 2**32 else "x86"
+        os.environ.setdefault("PROCESSOR_ARCHITECTURE", architecture)
+    return TkinterDnD.Tk()
 
 
 class _RunLog(io.TextIOBase):
@@ -123,108 +98,283 @@ def outcome_message(code: int, completed: int, total: int) -> str:
 
 
 class AttendanceWindow:
-    def __init__(self, root: tk.Tk, base_dir: Path, args: argparse.Namespace):
+    def __init__(self, root: tk.Tk, base_dir: Path):
         self.root = root
-        self.base_dir = base_dir
-        paths, path_warning = load_window_paths(base_dir, args)
-        self.config_path = Path(paths["config"])
-        self.config_value = tk.StringVar(value=str(self.config_path))
+        self.base_dir = base_dir.resolve()
+        self.input_dir = self.base_dir / "input"
+        self.output_dir = self.base_dir / "output"
+        self.config_path = self.base_dir / "config.json"
         self.events = Queue()
         self.running = False
         self.log_path = None
         self.result_dir = None
-        self.input_value = tk.StringVar(value=paths["input"])
-        self.output_value = tk.StringVar(value=paths["output"])
-        self.status = tk.StringVar(value="就绪：请选择考勤目录和输出目录，然后开始统计。")
+        self.status = tk.StringVar(value="添加考勤文件后，点击“开始统计全部”。")
         self.counts = tk.StringVar(value="")
+        self.input_summary = tk.StringVar()
+        self.output_summary = tk.StringVar()
+        self.details_visible = tk.BooleanVar(value=False)
+        self.controls = []
+        self.trees = {}
+        self.tree_paths = {"input": {}, "output": {}}
         root.title("钉钉考勤统计")
-        root.geometry("960x700")
-        root.minsize(800, 600)
+        root.geometry("1020x720")
+        root.minsize(900, 620)
         root.protocol("WM_DELETE_WINDOW", self.close)
         style = ttk.Style(root)
         if "vista" in style.theme_names():
             style.theme_use("vista")
         style.configure("TLabel", font=("Microsoft YaHei UI", 10))
-        style.configure("TButton", font=("Microsoft YaHei UI", 10), padding=(10, 6))
+        style.configure("TButton", font=("Microsoft YaHei UI", 10), padding=(8, 4))
         style.configure("Title.TLabel", font=("Microsoft YaHei UI", 18, "bold"))
-        frame = ttk.Frame(root, padding=20)
+        frame = ttk.Frame(root, padding=12)
         frame.pack(fill="both", expand=True)
-        frame.columnconfigure(1, weight=1)
-        frame.rowconfigure(9, weight=1)
-        ttk.Label(frame, text="考勤统计", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
-        ttk.Label(frame, text="批量处理考勤目录第一层的 .xlsx / .xlsm 文件，检查规则后开始统计。").grid(
-            row=1, column=0, columnspan=4, sticky="w", pady=(5, 18)
-        )
-        ttk.Label(frame, text="考勤输入目录").grid(row=2, column=0, sticky="w", padx=(0, 12))
-        input_entry = ttk.Entry(frame, textvariable=self.input_value)
-        input_entry.grid(row=2, column=1, columnspan=2, sticky="ew")
-        directory_button = ttk.Button(frame, text="选择考勤目录", command=self.select_input_directory)
-        directory_button.grid(row=2, column=3, padx=(8, 0))
-        ttk.Label(frame, text="结果输出目录").grid(row=3, column=0, sticky="w", pady=10)
-        output_entry = ttk.Entry(frame, textvariable=self.output_value)
-        output_entry.grid(row=3, column=1, columnspan=2, sticky="ew")
-        output_button = ttk.Button(frame, text="选择输出目录", command=self.select_output_directory)
-        output_button.grid(row=3, column=3, padx=(8, 0))
-        ttk.Label(frame, text="路径会自动记住；每次统计新建一个带时间的结果目录。").grid(
-            row=4, column=1, columnspan=3, sticky="w"
-        )
-        config_frame = ttk.LabelFrame(frame, text="规则配置：在窗口中修改并保存后再统计", padding=10)
-        config_frame.grid(row=5, column=0, columnspan=4, sticky="ew", pady=16)
-        config_frame.columnconfigure(0, weight=1)
-        ttk.Label(config_frame, textvariable=self.config_value, wraplength=680).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
-        config_button = ttk.Button(config_frame, text="选择配置文件", command=self.select_config)
-        config_button.grid(row=1, column=0, sticky="w")
-        rules_button = ttk.Button(config_frame, text="编辑考勤规则", command=lambda: self.edit_config(RulesEditor))
-        rules_button.grid(row=1, column=1, padx=(8, 0))
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(2, weight=1)
+        header = ttk.Frame(frame)
+        header.grid(row=0, column=0, sticky="ew")
+        ttk.Label(header, text="考勤统计", style="Title.TLabel").pack(side="left")
         holidays_button = ttk.Button(
-            config_frame, text="编辑公司放假", command=lambda: self.edit_config(CompanyHolidayEditor)
+            header, text="编辑公司放假", command=lambda: self.edit_config(CompanyHolidayEditor)
         )
-        holidays_button.grid(row=1, column=2, padx=(8, 0))
+        holidays_button.pack(side="right")
+        rules_button = ttk.Button(header, text="编辑考勤规则", command=lambda: self.edit_config(RulesEditor))
+        rules_button.pack(side="right", padx=8)
+        self.controls.extend([rules_button, holidays_button])
+        ttk.Label(frame, text="添加原始考勤 → 统计 input 中全部文件 → 在 output 列表查看结果。").grid(
+            row=1, column=0, sticky="w", pady=(6, 8)
+        )
+        lists = ttk.Frame(frame)
+        lists.grid(row=2, column=0, sticky="nsew")
+        lists.columnconfigure((0, 1), weight=1, uniform="files")
+        lists.rowconfigure(0, weight=1)
+        self.make_file_panel(lists, "input", "原始考勤 · input", 0)
+        self.make_file_panel(lists, "output", "统计结果 · output", 1)
         actions = ttk.Frame(frame)
-        actions.grid(row=6, column=0, columnspan=4, sticky="ew")
-        self.start_button = ttk.Button(actions, text="开始统计", command=self.start)
+        actions.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self.start_button = ttk.Button(actions, text="开始统计全部", command=self.start)
         self.start_button.pack(side="left")
-        self.result_button = ttk.Button(actions, text="打开本次结果", command=lambda: self.open_path(self.result_dir), state="disabled")
-        self.result_button.pack(side="left", padx=8)
-        self.log_button = ttk.Button(actions, text="打开本次日志", command=lambda: self.open_path(self.log_path), state="disabled")
-        self.log_button.pack(side="left")
-        ttk.Button(actions, text="复制详情", command=self.copy_details).pack(side="right")
-        self.controls = [input_entry, output_entry, directory_button, output_button, config_button, rules_button, holidays_button, self.start_button]
+        refresh_button = ttk.Button(actions, text="刷新列表", command=self.refresh_files)
+        refresh_button.pack(side="left", padx=8)
+        self.controls.extend([self.start_button, refresh_button])
+        ttk.Checkbutton(actions, text="显示处理详情", variable=self.details_visible, command=self.toggle_details).pack(side="right")
         self.status_label = ttk.Label(frame, textvariable=self.status, wraplength=850)
-        self.status_label.grid(row=7, column=0, columnspan=4, sticky="w", pady=(14, 8))
+        self.status_label.grid(row=4, column=0, sticky="w", pady=(6, 4))
         progress_frame = ttk.Frame(frame)
-        progress_frame.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(0, 12))
+        progress_frame.grid(row=5, column=0, sticky="ew")
         self.progress = ttk.Progressbar(progress_frame, mode="determinate")
         self.progress.pack(side="left", fill="x", expand=True)
         ttk.Label(progress_frame, textvariable=self.counts).pack(side="right", padx=(12, 0))
-        self.details = ScrolledText(frame, wrap="word", height=10, font=("Microsoft YaHei UI", 10), state="disabled")
-        self.details.grid(row=9, column=0, columnspan=4, sticky="nsew")
-        ttk.Label(frame, text="输入或配置出错时停止当前批次。完整原因会保留在下方详情和本地日志中。").grid(
-            row=10, column=0, columnspan=4, sticky="w", pady=(10, 0)
+        self.details_frame = ttk.LabelFrame(frame, text="处理详情", padding=8)
+        self.details_frame.grid(row=6, column=0, sticky="ew", pady=(8, 0))
+        detail_actions = ttk.Frame(self.details_frame)
+        detail_actions.pack(fill="x")
+        ttk.Button(detail_actions, text="复制详情", command=self.copy_details).pack(side="right")
+        self.log_button = ttk.Button(detail_actions, text="打开本次日志", command=lambda: self.open_path(self.log_path), state="disabled")
+        self.log_button.pack(side="right", padx=8)
+        self.details = ScrolledText(self.details_frame, wrap="word", height=3, font=("Microsoft YaHei UI", 10), state="disabled")
+        self.details.pack(fill="both", expand=True, pady=(8, 0))
+        self.toggle_details()
+        ttk.Label(frame, text=f"规则与公司假共用 config.json · 软件及数据位置：{self.base_dir}", foreground="#666666", wraplength=850).grid(
+            row=7, column=0, sticky="w", pady=(10, 0)
         )
-        root.after(100, self.poll)
-        if path_warning:
-            self.append_details(path_warning + "\n")
-            root.after(0, lambda: messagebox.showwarning("请检查恢复的路径", path_warning, parent=root))
+        for target in (root, self.trees["input"], self.drop_hint):
+            target.drop_target_register(DND_FILES)
+            target.dnd_bind("<<Drop>>", self.drop_files)
+        self.refresh_files()
+        self.poll_id = root.after(100, self.poll)
 
-    def select_input_directory(self) -> None:
-        path = filedialog.askdirectory(title="选择考勤输入目录", mustexist=True)
-        if path:
-            self.input_value.set(path)
-            self.remember_paths()
+    def make_file_panel(self, parent: ttk.Frame, kind: str, title: str, column: int) -> None:
+        panel = ttk.LabelFrame(parent, text=title, padding=8)
+        panel.grid(row=0, column=column, sticky="nsew", padx=(0, 6) if column == 0 else (6, 0))
+        panel.columnconfigure(0, weight=1)
+        panel.rowconfigure(2, weight=1)
+        toolbar = ttk.Frame(panel)
+        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 4))
+        if kind == "input":
+            button = ttk.Button(toolbar, text="添加考勤文件…", command=self.select_files)
+            self.controls.append(button)
+        else:
+            button = ttk.Button(toolbar, text="打开所选", command=lambda: self.open_selected(kind))
+        button.pack(side="left")
+        remove_button = ttk.Button(toolbar, text="移到回收站", command=lambda: self.remove_files(kind))
+        remove_button.pack(side="left", padx=6)
+        clear_button = ttk.Button(toolbar, text="清空…", command=lambda: self.remove_files(kind, clear=True))
+        clear_button.pack(side="right")
+        self.controls.extend([remove_button, clear_button])
+        if kind == "input":
+            self.drop_hint = tk.Label(panel, text="拖入 .xlsx / .xlsm 原始考勤，复制到 input", background="#eff6ff", foreground="#2255a4", font=("Microsoft YaHei UI", 10), pady=6)
+            self.drop_hint.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        else:
+            ttk.Label(panel, text="双击打开报表；展开批次可查看其中的文件。", wraplength=420).grid(
+                row=1, column=0, columnspan=2, sticky="nw", pady=(0, 8)
+            )
+        columns = ("state", "modified") if kind == "input" else ("modified",)
+        tree = ttk.Treeview(panel, columns=columns, selectmode="extended", height=8)
+        tree.heading("#0", text="文件名" if kind == "input" else "批次 / 结果文件")
+        tree.column("#0", width=220, minwidth=220, stretch=False)
+        tree.heading("modified", text="更新时间")
+        tree.column("modified", width=140, minwidth=130, stretch=False)
+        if kind == "input":
+            tree.heading("state", text="状态")
+            tree.column("state", width=85, minwidth=75, stretch=False)
+        tree.grid(row=2, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(panel, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=2, column=1, sticky="ns")
+        tree.configure(yscrollcommand=scrollbar.set)
+        horizontal = ttk.Scrollbar(panel, orient="horizontal", command=tree.xview)
+        horizontal.grid(row=3, column=0, sticky="ew")
+        tree.configure(xscrollcommand=horizontal.set)
+        tree.bind("<Double-1>", lambda event: self.open_selected(kind, files_only=True))
+        tree.bind("<Delete>", lambda event: self.remove_files(kind))
+        self.trees[kind] = tree
+        footer = ttk.Frame(panel)
+        footer.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+        summary = self.input_summary if kind == "input" else self.output_summary
+        ttk.Label(footer, textvariable=summary).pack(side="left")
+        ttk.Button(footer, text=f"打开 {kind} 文件夹", command=lambda: self.open_path(self.base_dir / kind)).pack(side="right")
 
-    def select_output_directory(self) -> None:
-        path = filedialog.askdirectory(title="选择结果输出目录")
-        if path:
-            self.output_value.set(path)
-            self.remember_paths()
+    def refresh_files(self) -> bool:
+        try:
+            try:
+                config = AppConfig.load(self.config_path)
+            except (OSError, ValueError):
+                config = None
+            eligible = set(cli._find_input_files(self.input_dir, config)) if config and self.input_dir.is_dir() and not is_link(self.input_dir) else set()
+            for kind, tree in self.trees.items():
+                selection = tree.selection()
+                expanded = {item for item in self.tree_paths[kind] if tree.item(item, "open")}
+                tree.delete(*tree.get_children())
+                self.tree_paths[kind].clear()
+                directory = self.base_dir / kind
+                name_width = 220
 
-    def select_config(self) -> None:
-        path = filedialog.askopenfilename(title="选择考勤配置文件", filetypes=[("JSON 配置文件", "*.json")])
-        if path:
-            self.config_path = Path(path).resolve()
-            self.config_value.set(str(self.config_path))
-            self.remember_paths()
+                def insert(path: Path, parent: str = "") -> None:
+                    nonlocal name_width
+                    linked = is_link(path)
+                    folder = path.is_dir() and not linked
+                    item = path.relative_to(directory).as_posix()
+                    name_width = max(name_width, int(self.root.tk.call("font", "measure", "TkDefaultFont", path.name)) + 48 + 20 * item.count("/"))
+                    modified = datetime.fromtimestamp(path.lstat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                    if kind == "input":
+                        state = "链接需移除" if linked else "子目录（跳过）" if folder else "待统计" if path in eligible else "规则待修正" if config is None else "不参与统计"
+                        values = (state, modified)
+                    else:
+                        values = (modified,)
+                    tree.insert(parent, "end", iid=item, text=path.name, values=values, open=item in expanded or path == self.result_dir)
+                    self.tree_paths[kind][item] = path
+                    if kind == "output" and folder:
+                        for child in list_entries(path):
+                            insert(child, item)
+
+                entries = list_entries(directory)
+                for path in reversed(entries) if kind == "output" else entries:
+                    insert(path)
+                tree.column("#0", width=name_width)
+                tree.selection_set([item for item in selection if item in self.tree_paths[kind]])
+                if kind == "input":
+                    self.input_summary.set(f"待统计 {sum(not is_link(path) for path in eligible)} 个文件" if config else "配置有误，请检查 config.json")
+                else:
+                    self.output_summary.set(f"{len(entries)} 项结果 / 批次")
+            return True
+        except (OSError, ValueError) as error:
+            self.show_error("无法读取数据目录", f"{error}\n请完整解压软件到可写目录，检查 input / output 是否为普通文件夹。")
+            return False
+
+    def select_files(self) -> None:
+        if self.running:
+            return
+        paths = filedialog.askopenfilenames(parent=self.root, title="添加钉钉原始考勤文件（可多选）", filetypes=[("Excel 考勤文件", "*.xlsx *.xlsm")])
+        if paths:
+            self.import_files([Path(path) for path in paths])
+
+    def drop_files(self, event) -> str:
+        if self.running:
+            self.root.bell()
+            return REFUSE_DROP
+        try:
+            paths = [Path(path) for path in self.root.tk.splitlist(event.data)]
+        except (tk.TclError, ValueError) as error:
+            self.show_error("无法识别拖入的文件", str(error))
+            return REFUSE_DROP
+        return COPY if self.import_files(paths) else REFUSE_DROP
+
+    def import_files(self, paths: list[Path]) -> bool:
+        if self.running:
+            return False
+        copied = 0
+        try:
+            config = AppConfig.load(self.config_path)
+            plans = prepare_import(paths, self.input_dir, config.report.output_suffix)
+            duplicates = [target.name for _, target in plans if target.exists()]
+            replace = False
+            if duplicates:
+                replace = messagebox.askyesnocancel("input 中已有同名文件", "是否替换以下文件？\n选择“否”跳过同名文件，选择“取消”不导入。\n\n" + "\n".join(duplicates), parent=self.root)
+                if replace is None:
+                    return False
+            self.root.configure(cursor="watch")
+            self.root.update_idletasks()
+            for source, target in plans:
+                if target.exists() and not replace:
+                    continue
+                copy_input(source, target, replace=replace)
+                copied += 1
+            if not self.refresh_files():
+                return False
+            self.status_label.configure(foreground="#16803b")
+            self.status.set(f"已添加 {copied} 个考勤文件，跳过 {len(paths) - copied} 个已存在或重复文件。点击“开始统计全部”处理 input 中全部有效文件。")
+            return True
+        except (OSError, ValueError) as error:
+            self.refresh_files()
+            self.show_error("添加考勤文件失败", f"{error}\n本次已添加 {copied} 个文件，原始位置的文件保留。")
+            return False
+        finally:
+            self.root.configure(cursor="")
+
+    def remove_files(self, kind: str, *, clear: bool = False) -> None:
+        if self.running:
+            return
+        try:
+            directory = self.base_dir / kind
+            paths = list_entries(directory) if clear else [self.tree_paths[kind][item] for item in self.trees[kind].selection()]
+            if not paths:
+                messagebox.showinfo("没有待清理的项目", "请在列表中选择文件或批次，可按 Ctrl / Shift 多选。", parent=self.root)
+                return
+            names = [str(path.relative_to(directory)) + ("（文件夹，包含其中全部文件）" if path.is_dir() else "") for path in paths]
+            preview = "\n".join(names[:10]) + (f"\n……共 {len(names)} 项" if len(names) > 10 else "")
+            prompt = f"将 {kind} 中的以下项目移到回收站？\n\n{preview}\n\n误删可从 Windows 回收站恢复。"
+            if kind == "input":
+                prompt += "\n只清理 input 中的副本，原始导出位置的文件保留。"
+            if not messagebox.askyesno("清空 " + kind if clear else "确认移到回收站", prompt, parent=self.root):
+                return
+            completed = recycle_entries(directory, paths)
+            self.status.set(f"已将 {completed} 项移到回收站。")
+        except (OSError, ValueError) as error:
+            self.show_error("清理未完成", str(error))
+        finally:
+            self.refresh_files()
+
+    def open_selected(self, kind: str, *, files_only: bool = False) -> None:
+        selected = self.trees[kind].selection()
+        if selected:
+            path = self.tree_paths[kind][selected[0]]
+            if not files_only or path.is_file():
+                self.open_path(path)
+        elif not files_only:
+            messagebox.showinfo("请先选择结果", "请在 output 列表中选择报表或批次。", parent=self.root)
+
+    def toggle_details(self) -> None:
+        if self.details_visible.get():
+            self.details_frame.grid()
+        else:
+            self.details_frame.grid_remove()
+
+    def show_error(self, title: str, message: str) -> None:
+        self.status.set(title + "，请查看处理详情。")
+        self.status_label.configure(foreground="#b42318")
+        self.append_details(message + "\n")
+        self.details_visible.set(True)
+        self.toggle_details()
+        messagebox.showerror(title, message, parent=self.root)
 
     def edit_config(self, editor_type) -> None:
         if self.running:
@@ -232,59 +382,45 @@ class AttendanceWindow:
         try:
             config = AppConfig.load(self.config_path)
         except (OSError, ValueError) as error:
-            messagebox.showerror("无法编辑配置", f"{error}\n请通过“选择配置文件”选择有效的 JSON 配置。", parent=self.root)
+            self.show_error("无法编辑配置", f"{error}\n请检查软件同目录的 config.json，或保留原配置后从“配置模板”恢复。")
             return
         editor = editor_type(self.root, self.config_path, config)
         self.root.wait_window(editor)
         if editor.saved:
             self.status.set("配置已保存，下次统计将使用新设置。")
-
-    def remember_paths(self) -> None:
-        values = {"input": self.input_value.get().strip(), "output": self.output_value.get().strip(), "config": str(self.config_path)}
-        if not all(values.values()):
-            return
-        try:
-            save_window_paths(self.base_dir, {key: str(Path(value).expanduser().resolve()) for key, value in values.items()})
-        except (OSError, ValueError) as error:
-            message = f"无法保存窗口路径：{self.base_dir / 'window_paths.json'}\n{error}\n本次仍可统计，下次打开可能需要重新选择路径。"
-            self.append_details(message + "\n")
-            messagebox.showwarning("路径未记住", message, parent=self.root)
+            self.refresh_files()
 
     def start(self) -> None:
         if self.running:
             return
-        if not self.input_value.get().strip() or not self.output_value.get().strip():
-            messagebox.showerror("请先选择目录", "请选择考勤输入目录和结果输出目录。", parent=self.root)
+        if not self.refresh_files():
             return
         try:
-            input_path = Path(self.input_value.get().strip()).expanduser().resolve()
-            output_root = Path(self.output_value.get().strip()).expanduser().resolve()
-            if not input_path.is_dir():
-                messagebox.showerror("请选择考勤目录", f"考勤输入必须是已存在的目录：\n{input_path}\n请点击“选择考勤目录”重新选择。", parent=self.root)
+            config = AppConfig.load(self.config_path)
+            inputs = cli._find_input_files(self.input_dir, config)
+            if not inputs:
+                messagebox.showinfo("请先添加考勤", "input 中没有可统计的考勤文件。\n请点击“添加考勤文件…”或拖入钉钉导出的 .xlsx / .xlsm。", parent=self.root)
                 return
-            if output_root.exists() and not output_root.is_dir():
-                messagebox.showerror("请选择输出目录", f"输出位置必须是目录，当前路径是文件：\n{output_root}\n请点击“选择输出目录”重新选择。", parent=self.root)
-                return
+            for path in inputs:
+                managed_path(self.input_dir, path)
         except (OSError, ValueError) as error:
-            messagebox.showerror("路径无效", str(error), parent=self.root)
+            self.show_error("无法开始统计", str(error))
             return
-        self.result_dir = output_root / f"统计_{datetime.now():%Y%m%d_%H%M%S_%f}"
+        self.result_dir = self.output_dir / f"统计_{datetime.now():%Y%m%d_%H%M%S_%f}"
         self.log_path = None
         self.running = True
         self.details.configure(state="normal")
         self.details.delete("1.0", "end")
         self.details.configure(state="disabled")
-        self.remember_paths()
         for control in self.controls:
             control.configure(state="disabled")
-        self.result_button.configure(state="disabled")
         self.log_button.configure(state="disabled")
         self.status_label.configure(foreground="#2255a4")
         self.status.set("正在检查规则与输入，请稍候……")
         self.counts.set("准备中")
         self.progress.configure(mode="indeterminate")
         self.progress.start(15)
-        Thread(target=run_job, args=(input_path, self.result_dir, self.config_path, self.base_dir / "logs", self.events), daemon=True).start()
+        Thread(target=run_job, args=(self.input_dir, self.result_dir, self.config_path, self.base_dir / "logs", self.events), daemon=True).start()
 
     def append_details(self, text: str) -> None:
         self.details.configure(state="normal")
@@ -306,7 +442,7 @@ class AttendanceWindow:
                     self.finish(*values)
         except Empty:
             pass
-        self.root.after(100, self.poll)
+        self.poll_id = self.root.after(100, self.poll)
 
     def finish(self, code: int, log_path: Path | None, completed: int, total: int) -> None:
         self.running = False
@@ -318,11 +454,16 @@ class AttendanceWindow:
         self.counts.set(f"已完成 {completed}/{total} 个文件" if total else "未完成")
         self.status.set(outcome_message(code, completed, total))
         self.status_label.configure(foreground="#16803b" if code == 0 else "#b42318")
-        if completed:
-            self.result_button.configure(state="normal")
+        self.refresh_files()
+        if self.result_dir and self.result_dir.name in self.tree_paths["output"]:
+            tree = self.trees["output"]
+            tree.selection_set(self.result_dir.name)
+            tree.see(self.result_dir.name)
         if log_path and log_path.is_file():
             self.log_button.configure(state="normal")
         if code:
+            self.details_visible.set(True)
+            self.toggle_details()
             messagebox.showerror("统计未完成", outcome_message(code, completed, total) + "\n\n请查看窗口中的完整详情。", parent=self.root)
 
     def open_path(self, path: Path | None) -> None:
@@ -341,19 +482,16 @@ class AttendanceWindow:
         if self.running:
             messagebox.showinfo("正在统计", "请等待本次统计结束后关闭窗口，避免中断结果写入。", parent=self.root)
         else:
-            self.remember_paths()
+            self.root.after_cancel(self.poll_id)
             self.root.destroy()
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="钉钉考勤统计窗口")
-    parser.add_argument("input", nargs="?", help="预先选择考勤输入目录，批量处理目录第一层的 Excel")
-    parser.add_argument("-c", "--config", help="JSON 配置文件路径")
-    parser.add_argument("-o", "--output", help="结果保存目录")
-    args = parser.parse_args(argv)
+    parser = argparse.ArgumentParser(description="钉钉考勤统计窗口：固定读取软件同目录的 input 和 config.json，结果保存到 output。")
+    parser.parse_args(argv)
     base_dir = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[1]
-    root = tk.Tk()
-    AttendanceWindow(root, base_dir, args)
+    root = create_root()
+    AttendanceWindow(root, base_dir)
     root.mainloop()
     return 0
 

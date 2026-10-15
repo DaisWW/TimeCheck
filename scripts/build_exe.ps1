@@ -22,7 +22,7 @@ try {
         throw "Python dependency installation failed with exit code $LASTEXITCODE"
     }
 
-    & $Python -X utf8 -c "from pathlib import Path; from attendance_analyzer.config import AppConfig; AppConfig.load(Path('config.json')); import tkinter; print('JSON configuration and Tk runtime OK')"
+    & $Python -X utf8 -c "from pathlib import Path; from attendance_analyzer.config import AppConfig; AppConfig.load(Path('config.json')); from attendance_analyzer.gui import create_root; root = create_root(); root.withdraw(); root.destroy(); print('JSON configuration and drag-and-drop runtime OK')"
     if ($LASTEXITCODE -ne 0) {
         throw "Build preflight failed. Check the JSON configuration and install Python with Tcl/Tk support."
     }
@@ -37,6 +37,7 @@ try {
         --clean `
         --onefile `
         --windowed `
+        --collect-all tkinterdnd2 `
         --name $Name `
         --distpath $releaseDir `
         --workpath $buildDir `

@@ -1,92 +1,21 @@
-import argparse
 from contextlib import redirect_stdout
 from datetime import date
+import gc
 import io
-import json
 from pathlib import Path
 from queue import Queue
+import sys
 import tempfile
+import time
+from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock, call, patch
+from unittest.mock import call, patch
 
 from attendance_analyzer import gui
 from attendance_analyzer.config import AppConfig
 from attendance_analyzer.excel_reader import WorkbookInputError
 from attendance_analyzer.models import InputIssue
-
-
-class GuiPathsTest(unittest.TestCase):
-    def args(self, **overrides):
-        return argparse.Namespace(**({"input": None, "output": None, "config": None} | overrides))
-
-    def test_first_start_uses_adjacent_defaults_without_creating_settings(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            paths, warning = gui.load_window_paths(root, self.args())
-            self.assertEqual(paths, {"input": str(root / "input"), "output": str(root / "output"), "config": str(root / "config.json")})
-            self.assertFalse(warning)
-            self.assertFalse((root / "window_paths.json").exists())
-
-    def test_round_trip_restores_unicode_paths_including_missing_config(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            selected = {"input": str(root / "每月考勤"), "output": str(root / "统计 结果"), "config": str(root / "自选规则/规则.json")}
-            gui.save_window_paths(root, selected)
-            paths, warning = gui.load_window_paths(root, self.args())
-            self.assertEqual(paths, selected)
-            self.assertFalse(warning)
-            self.assertFalse(Path(paths["config"]).exists())
-
-    def test_explicit_arguments_override_saved_paths_individually(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            selected = {key: str(root / f"saved_{key}") for key in ("input", "output", "config")}
-            gui.save_window_paths(root, selected)
-            for key in selected:
-                with self.subTest(key=key):
-                    override = root / f"参数路径_{key}"
-                    paths, warning = gui.load_window_paths(root, self.args(**{key: str(override)}))
-                    self.assertEqual(paths, selected | {key: str(override)})
-                    self.assertFalse(warning)
-
-    def test_corrupt_or_invalid_settings_show_warning_before_using_defaults(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            values = ["{broken", "[]", '{"input":3}', json.dumps({key: "relative" for key in ("input", "output", "config")})]
-            for value in values:
-                with self.subTest(value=value):
-                    (root / "window_paths.json").write_text(value, encoding="utf-8")
-                    paths, warning = gui.load_window_paths(root, self.args())
-                    self.assertEqual(paths["config"], str(root / "config.json"))
-                    self.assertIn("window_paths.json", warning)
-                    self.assertIn("请检查并重新选择", warning)
-                    self.assertEqual((root / "window_paths.json").read_text(encoding="utf-8"), value)
-
-    def test_failed_atomic_save_preserves_previous_paths_and_removes_temporary_file(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            original = {key: str(root / key) for key in ("input", "output", "config")}
-            gui.save_window_paths(root, original)
-            with patch("attendance_analyzer.gui.Path.replace", side_effect=PermissionError("blocked")):
-                with self.assertRaises(PermissionError):
-                    gui.save_window_paths(root, original | {"input": str(root / "changed")})
-            self.assertEqual(json.loads((root / "window_paths.json").read_text(encoding="utf-8")), original)
-            self.assertEqual(list(root.glob("*.tmp")), [])
-
-    def test_missing_restored_config_is_reported_instead_of_using_adjacent_config(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            AppConfig().save(root / "config.json")
-            selected = {"input": str(root / "input"), "output": str(root / "output"), "config": str(root / "已移走/config.json")}
-            gui.save_window_paths(root, selected)
-            paths, _ = gui.load_window_paths(root, self.args())
-            events = Queue()
-            with patch("attendance_analyzer.cli.AttendanceAnalyzer") as analyzer:
-                gui.run_job(Path(paths["input"]), Path(paths["output"]), Path(paths["config"]), root / "logs", events)
-            analyzer.assert_not_called()
-            items = drain(events)
-            self.assertEqual(items[-1][:2], ("finished", 2))
-            self.assertIn(selected["config"], items[-1][2].read_text(encoding="utf-8-sig"))
+from test_input_validation import valid_workbook
 
 
 def drain(events):
@@ -94,32 +23,6 @@ def drain(events):
     while not events.empty():
         items.append(events.get_nowait())
     return items
-
-
-class GuiDirectoryTest(unittest.TestCase):
-    def test_start_rejects_file_or_missing_input_and_file_output_before_starting_worker(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            input_dir = root / "每月考勤"
-            input_dir.mkdir()
-            file_path = root / "考勤.xlsx"
-            file_path.touch()
-            for input_path, output_path, title, invalid_path in (
-                (file_path, root / "结果", "请选择考勤目录", file_path),
-                (root / "已移走", root / "结果", "请选择考勤目录", root / "已移走"),
-                (input_dir, file_path, "请选择输出目录", file_path),
-            ):
-                with self.subTest(input_path=input_path, output_path=output_path):
-                    window = Mock(running=False)
-                    window.input_value.get.return_value = str(input_path)
-                    window.output_value.get.return_value = str(output_path)
-                    with patch.object(gui.messagebox, "showerror") as error, patch.object(gui, "Thread") as worker:
-                        gui.AttendanceWindow.start(window)
-                    worker.assert_not_called()
-                    window.remember_paths.assert_not_called()
-                    self.assertFalse(window.running)
-                    self.assertEqual(error.call_args.args[0], title)
-                    self.assertIn(str(invalid_path), error.call_args.args[1])
 
 
 class GuiJobTest(unittest.TestCase):
@@ -213,6 +116,154 @@ class GuiJobTest(unittest.TestCase):
             items = drain(events)
             self.assertIn("无法保存运行日志", items[0][1])
             self.assertEqual(items[-1][0:2], ("finished", 3))
+
+
+@unittest.skipUnless(sys.platform == "win32", "Tk 文件管理集成测试在 Windows 执行")
+class GuiFileListTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.base = Path(self.temporary.name)
+        AppConfig().save(self.base / "config.json")
+        # 旧路径记录不会改变固定的数据位置。
+        (self.base / "window_paths.json").write_text('{"config":"wrong"}', encoding="utf-8")
+        self.root = gui.create_root()
+        self.root.withdraw()
+        self.errors = patch.object(gui.messagebox, "showerror").start()
+        self.window = gui.AttendanceWindow(self.root, self.base)
+        self.root.update_idletasks()
+        self.source = self.base / "外部 原始考勤"
+        self.source.mkdir()
+
+    def tearDown(self):
+        self.window.close()
+        self.window = self.root = None
+        gc.collect()
+        patch.stopall()
+        self.temporary.cleanup()
+
+    def file(self, name="甲部门 考勤.xlsx", content=b"source"):
+        path = self.source / name
+        path.write_bytes(content)
+        return path
+
+    def test_fixed_directories_and_file_picker_copy_all_inputs_to_list(self):
+        sources = [self.file(), self.file("乙部门.xlsm")]
+        with patch.object(gui.filedialog, "askopenfilenames", return_value=[str(path) for path in sources]):
+            self.window.select_files()
+        self.assertEqual(self.window.config_path, self.base / "config.json")
+        self.assertEqual(set(self.window.tree_paths["input"]), {path.name for path in sources})
+        self.assertEqual(self.window.input_summary.get(), "待统计 2 个文件")
+        for path in sources:
+            self.assertEqual((self.base / "input" / path.name).read_bytes(), path.read_bytes())
+        self.assertEqual((self.base / "window_paths.json").read_text(), '{"config":"wrong"}')
+        self.assertFalse(self.window.details_visible.get())
+        self.errors.assert_not_called()
+
+    def test_minimum_window_keeps_file_rows_visible_with_details_and_long_names_scroll(self):
+        self.window.import_files([self.file("研发中心_2026年09月考勤汇总_原始导出数据.xlsx")])
+        self.root.geometry("900x620")
+        self.window.details_visible.set(True)
+        self.window.toggle_details()
+        self.root.deiconify()
+        self.root.update()
+        for tree in self.window.trees.values():
+            self.assertGreaterEqual(tree.winfo_height(), 60)
+        tree = self.window.trees["input"]
+        tree.xview_moveto(1)
+        self.assertGreater(tree.xview()[0], 0)
+        self.assertEqual(len(tree.selection()), 0)
+
+    def test_drop_handles_tcl_quoted_unicode_spaces_and_rejects_bad_input_without_partial_copy(self):
+        paths = [self.file(), self.file("带 {括号} 文件.xlsm")]
+        data = self.root.tk.call("list", *(str(path) for path in paths))
+        self.assertEqual(self.window.drop_files(SimpleNamespace(data=data)), gui.COPY)
+        self.assertEqual(len(self.window.tree_paths["input"]), 2)
+        bad, good = self.file("说明.txt"), self.file("新考勤.xlsx")
+        data = self.root.tk.call("list", str(bad), str(good))
+        self.assertEqual(self.window.drop_files(SimpleNamespace(data=data)), gui.REFUSE_DROP)
+        self.assertFalse((self.base / "input" / good.name).exists())
+        self.assertTrue(self.window.details_visible.get())
+        self.errors.assert_called_once()
+
+    def test_same_name_can_skip_cancel_or_replace_and_copy_failure_keeps_old_file(self):
+        path = self.file()
+        self.window.import_files([path])
+        target = self.base / "input" / path.name
+        path.write_bytes(b"updated")
+        for choice in (False, None):
+            with patch.object(gui.messagebox, "askyesnocancel", return_value=choice):
+                self.window.import_files([path])
+            self.assertEqual(target.read_bytes(), b"source")
+        with patch.object(gui.messagebox, "askyesnocancel", return_value=True):
+            self.assertTrue(self.window.import_files([path]))
+        self.assertEqual(target.read_bytes(), b"updated")
+
+    def test_cleanup_requires_confirmation_and_selected_batch_includes_children_only_once(self):
+        self.window.import_files([self.file()])
+        batch = self.base / "output" / "统计_历史"
+        batch.mkdir()
+        report = batch / "结果.xlsx"
+        report.touch()
+        self.window.refresh_files()
+        tree = self.window.trees["output"]
+        tree.selection_set("统计_历史", "统计_历史/结果.xlsx")
+        with patch.object(gui.messagebox, "askyesno", return_value=False), patch.object(gui, "recycle_entries") as recycle:
+            self.window.remove_files("output")
+            recycle.assert_not_called()
+        with patch.object(gui.messagebox, "askyesno", return_value=True) as confirm, patch("attendance_analyzer.file_manager.send2trash") as recycle:
+            self.window.remove_files("output")
+            recycle.assert_called_once_with(str(batch))
+            self.assertIn("全部文件", confirm.call_args.args[1])
+        with patch.object(gui.messagebox, "askyesno", return_value=True), patch.object(gui, "recycle_entries", return_value=1) as recycle:
+            self.window.remove_files("input", clear=True)
+            recycle.assert_called_once_with(self.base / "input", [self.base / "input" / "甲部门 考勤.xlsx"])
+
+    def test_empty_input_or_invalid_config_stops_before_worker_and_running_locks_changes(self):
+        with patch.object(gui.messagebox, "showinfo") as info, patch.object(gui, "Thread") as worker:
+            self.window.start()
+            info.assert_called_once()
+            worker.assert_not_called()
+        (self.base / "config.json").write_text("broken", encoding="utf-8")
+        self.assertFalse(self.window.import_files([self.file()]))
+        with patch.object(gui, "Thread") as worker:
+            self.window.start()
+            worker.assert_not_called()
+        self.assertFalse(self.window.running)
+        self.window.running = True
+        with patch.object(gui, "recycle_entries") as recycle, patch.object(gui.filedialog, "askopenfilenames") as select:
+            self.window.select_files()
+            self.window.remove_files("input", clear=True)
+            self.assertFalse(self.window.import_files([self.file()]))
+            self.assertEqual(self.window.drop_files(SimpleNamespace(data="")), gui.REFUSE_DROP)
+            recycle.assert_not_called()
+            select.assert_not_called()
+        self.window.running = False
+
+    def test_real_background_batch_populates_output_tree_and_source_files_are_preserved(self):
+        sources = []
+        for index, name in enumerate(("甲部门.xlsx", "乙部门.xlsm"), 1):
+            path = self.source / name
+            workbook = valid_workbook()
+            workbook["每日统计"].cell(5, 2).value = f"user{index}"
+            for row in (4, 5):
+                workbook["原始记录"].cell(row, 2).value = f"user{index}"
+            workbook.save(path)
+            workbook.close()
+            sources.append(path)
+        before = {path: path.read_bytes() for path in sources}
+        self.window.import_files(sources)
+        self.window.start()
+        deadline = time.monotonic() + 20
+        while self.window.running and time.monotonic() < deadline:
+            self.root.update()
+            time.sleep(0.01)
+        self.assertFalse(self.window.running, "后台统计超时")
+        self.assertEqual(self.window.counts.get(), "已完成 2/2 个文件")
+        self.assertEqual(self.window.result_dir.parent, self.base / "output")
+        self.assertEqual(len(self.window.tree_paths["output"]), 3)
+        self.assertTrue(self.window.trees["output"].item(self.window.result_dir.name, "open"))
+        self.assertEqual(before, {path: path.read_bytes() for path in sources})
+        self.errors.assert_not_called()
 
 
 if __name__ == "__main__":
