@@ -21,11 +21,11 @@ class ConfigTest(unittest.TestCase):
             path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
             return AppConfig.load(path)
 
-    def test_shipped_json_preserves_all_settings_and_editor_covers_every_rule(self):
+    def test_template_defaults_runtime_config_validity_and_editor_rule_coverage(self):
         expected = AppConfig()
-        for name in ("config.json", "config.example.json"):
-            with self.subTest(name=name):
-                self.assertEqual(AppConfig.load(ROOT / name), expected)
+        self.assertEqual(AppConfig.load(ROOT / "config.example.json"), expected)
+        # 正式配置会由 HR 编辑；校验其合法性，不要求公司假和规则始终为默认值。
+        AppConfig.load(ROOT / "config.json")
         self.assertEqual(
             {f"{section}.{key}" for section, key, _, _, _ in RULE_FIELDS},
             {f"{section}.{key}" for section, value in expected.to_dict().items() if isinstance(value, dict) for key in value},
