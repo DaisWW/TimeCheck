@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import date
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
 from .company_calendar import PERIODS, parse_company_holidays
 from .config import AppConfig, RULE_FIELDS, parse_rule_text
+from .date_picker import DateField, parse_date_text
 
 
 ROUNDING_LABELS = {"floor": "向下取整", "ceil": "向上取整", "nearest": "就近取整"}
@@ -157,14 +159,118 @@ class RulesEditor(_ConfigDialog):
         self.persist(config)
 
 
+def holiday_range_dates(start: str, end: str) -> tuple[date, ...]:
+    bounds = []
+    for text, label in ((start, "开始日期"), (end, "结束日期")):
+        try:
+            bounds.append(parse_date_text(text))
+        except ValueError as error:
+            raise ValueError(f"{label}：{error}") from error
+    count = (bounds[1] - bounds[0]).days + 1
+    if count <= 0:
+        raise ValueError("结束日期不能早于开始日期，请重新选择。")
+    if count > 366:
+        raise ValueError(f"当前范围共 {count} 天；单次最多加入366天，请缩短范围后分批添加。")
+    return tuple(date.fromordinal(bounds[0].toordinal() + index) for index in range(count))
+
+
+class _HolidayRangeDialog(tk.Toplevel):
+    def __init__(self, editor):
+        super().__init__(editor)
+        self.editor = editor
+        self.title("添加公司放假日期范围")
+        self.transient(editor)
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+        self.bind("<Escape>", self.cancel)
+        today = date.today().isoformat()
+        self.variables = {key: tk.StringVar(self, value=value) for key, value in (
+            ("start", today), ("end", today), ("period", "全天"), ("note", ""),
+        )}
+        body = ttk.Frame(self, padding=16)
+        body.pack(fill="both", expand=True)
+        ttk.Label(body, text="选择一天或连续多天，再到逐日列表调整每一天的放假时段。").grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 14)
+        )
+        ttk.Label(body, text="开始日期").grid(row=1, column=0, sticky="w", padx=(0, 8))
+        self.start_field = DateField(body, self.variables["start"], self.align_end)
+        self.start_field.grid(row=1, column=1, sticky="ew", padx=(0, 16))
+        ttk.Label(body, text="结束日期").grid(row=1, column=2, sticky="w", padx=(0, 8))
+        self.end_field = DateField(body, self.variables["end"])
+        self.end_field.grid(row=1, column=3, sticky="ew")
+        ttk.Label(body, text="统一放假时段").grid(row=2, column=0, sticky="w", pady=14)
+        periods = ttk.Frame(body)
+        periods.grid(row=2, column=1, columnspan=3, sticky="w")
+        for period in PERIODS:
+            ttk.Radiobutton(periods, text=period, value=period, variable=self.variables["period"]).pack(side="left", padx=(0, 20))
+        ttk.Label(body, text="统一备注").grid(row=3, column=0, sticky="w", padx=(0, 8))
+        ttk.Entry(body, textvariable=self.variables["note"]).grid(row=3, column=1, columnspan=3, sticky="ew")
+        self.preview = ttk.Label(body, wraplength=600)
+        self.preview.grid(row=4, column=0, columnspan=4, sticky="w", pady=(14, 8))
+        ttk.Label(body, text="包含首尾和周末；已有日期不覆盖。加入列表后，仍需在主弹窗保存。", foreground="#555555").grid(
+            row=5, column=0, columnspan=4, sticky="w"
+        )
+        actions = ttk.Frame(body)
+        actions.grid(row=6, column=0, columnspan=4, sticky="e", pady=(16, 0))
+        ttk.Button(actions, text="取消", command=self.destroy).pack(side="left", padx=8)
+        ttk.Button(actions, text="加入逐日列表", command=self.confirm).pack(side="left")
+        for key in ("start", "end"):
+            self.variables[key].trace_add("write", self.update_preview)
+        self.update_preview()
+        self.update_idletasks()
+        x = max(0, min(editor.winfo_rootx() + (editor.winfo_width() - self.winfo_reqwidth()) // 2, self.winfo_screenwidth() - self.winfo_reqwidth()))
+        y = max(0, min(editor.winfo_rooty() + (editor.winfo_height() - self.winfo_reqheight()) // 2, self.winfo_screenheight() - self.winfo_reqheight()))
+        self.geometry(f"+{x}+{y}")
+        self.grab_set()
+        self.start_field.entry.focus_set()
+
+    def align_end(self, selected: date) -> None:
+        try:
+            if parse_date_text(self.variables["end"].get()) < selected:
+                self.variables["end"].set(selected.isoformat())
+        except ValueError:
+            pass
+
+    def update_preview(self, *args) -> None:
+        try:
+            days = holiday_range_dates(self.variables["start"].get(), self.variables["end"].get())
+            text = f"共 {len(days)} 天，加入后每天均可单独选择时段、修改备注或删除。"
+            color = "#2255a4"
+        except ValueError as error:
+            text, color = str(error), "#b42318"
+        self.preview.configure(text=text)
+
+    def confirm(self) -> None:
+        try:
+            self.editor.add_range(**{key: variable.get() for key, variable in self.variables.items()})
+        except ValueError as error:
+            messagebox.showerror("日期范围未加入", str(error), parent=self)
+            return
+        self.destroy()
+
+    def cancel(self, event=None) -> str:
+        self.destroy()
+        return "break"
+
+    def destroy(self) -> None:
+        super().destroy()
+        self.variables.clear()
+        if self.editor.winfo_exists():
+            self.editor.grab_set()
+
+
 class CompanyHolidayEditor(_ConfigDialog):
     def __init__(self, parent: tk.Misc, path: Path, config: AppConfig):
         super().__init__(parent, path, "编辑公司放假")
-        self.geometry("860x600")
-        self.minsize(760, 460)
-        ttk.Label(self.content, text="全员适用；日期填 YYYY-MM-DD。上午／下午边界采用考勤规则中的固定午休时段。", wraplength=760).pack(anchor="w", pady=(0, 10))
-        ttk.Label(self.content, text="公司放假免考勤，实际工作按休息日加班核算；法定节假日在考勤规则中单独设置。", wraplength=760).pack(anchor="w", pady=(0, 10))
-        ttk.Button(self.content, text="添加放假日", command=self.add_row).pack(anchor="w", pady=(0, 10))
+        self.geometry("960x650")
+        self.minsize(860, 500)
+        ttk.Label(self.content, text="全员适用；上午／下午边界采用考勤规则中的固定午休时段。", wraplength=800).pack(anchor="w", pady=(0, 10))
+        ttk.Label(self.content, text="公司放假免考勤，实际工作按休息日加班核算；法定节假日在考勤规则中单独设置。", wraplength=800).pack(anchor="w", pady=(0, 10))
+        actions = ttk.Frame(self.content)
+        actions.pack(fill="x", pady=(0, 10))
+        ttk.Button(actions, text="添加日期或范围…", command=self.open_range).pack(side="left")
+        self.summary = ttk.Label(actions)
+        self.summary.pack(side="left", padx=12)
         area = ttk.Frame(self.content)
         area.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(area, highlightthickness=0)
@@ -177,27 +283,56 @@ class CompanyHolidayEditor(_ConfigDialog):
         self.canvas_item = self.canvas.create_window((0, 0), window=self.rows_frame, anchor="nw")
         self.rows_frame.bind("<Configure>", lambda event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self.canvas_item, width=event.width))
-        for column, label in enumerate(("日期", "放假时段", "备注", "")):
-            ttk.Label(self.rows_frame, text=label).grid(row=0, column=column, sticky="w", pady=(0, 8))
+        self.bind("<MouseWheel>", self.scroll_rows)
+        for column, label in enumerate(("日期（可点日历选择）", "放假时段", "备注", "")):
+            ttk.Label(self.rows_frame, text=label).grid(row=0, column=column, sticky="w", padx=(0, 8), pady=(0, 8))
         self.rows = []
         self.initial = config.to_dict()["company_holidays"]
         for item in self.initial:
-            self.add_row(item)
+            self.add_row(item, arrange=False)
+        self.arrange_rows()
 
-    def add_row(self, values: dict | None = None) -> None:
+    def open_range(self):
+        return _HolidayRangeDialog(self)
+
+    def add_range(self, start: str, end: str, period: str, note: str) -> None:
+        days = holiday_range_dates(start, end)
+        existing = {item.work_date: item for item in parse_company_holidays(self.values())}
+        conflicts = [day for day in days if day in existing]
+        if conflicts:
+            details = "、".join(f"{day.isoformat()}（{existing[day].period}）" for day in conflicts[:8])
+            if len(conflicts) > 8:
+                details += f"等 {len(conflicts)} 天"
+            raise ValueError(f"以下日期已有安排：{details}。\n本次未加入任何日期。请调整范围，或取消后在逐日列表中修改已有安排。")
+        values = [{"date": day.isoformat(), "period": period, "note": note} for day in days]
+        parse_company_holidays(values)
+        for item in values:
+            self.add_row(item, arrange=False)
+        self.rows.sort(key=lambda row: row[0]["date"].get())
+        self.arrange_rows()
+        self.summary.configure(text=f"已加入 {len(days)} 天；当前共 {len(self.rows)} 天，可逐日修改后保存。")
+        self.update_idletasks()
+        first_index = next(index for index, row in enumerate(self.rows) if row[0]["date"].get() == days[0].isoformat())
+        self.canvas.yview_moveto(first_index / len(self.rows))
+
+    def add_row(self, values: dict | None = None, *, arrange: bool = True) -> None:
         values = values or {"date": "", "period": "全天", "note": ""}
         variables = {key: tk.StringVar(self, value=value) for key, value in values.items()}
-        date_entry = ttk.Entry(self.rows_frame, width=14, textvariable=variables["date"])
+        date_entry = DateField(self.rows_frame, variables["date"])
         period = ttk.Combobox(self.rows_frame, width=8, textvariable=variables["period"], values=PERIODS, state="readonly")
         note = ttk.Entry(self.rows_frame, textvariable=variables["note"])
         row = (variables, [date_entry, period, note])
         delete = ttk.Button(self.rows_frame, text="删除", command=lambda: self.delete_row(row))
         row[1].append(delete)
+        for widget in [*row[1], *date_entry.winfo_children()]:
+            # 滚动列表时不让下拉框意外改变放假时段。
+            widget.bind("<MouseWheel>", self.scroll_rows)
         self.rows.append(row)
-        self.arrange_rows()
-        date_entry.focus_set()
-        self.canvas.update_idletasks()
-        self.canvas.yview_moveto(1)
+        if arrange:
+            self.arrange_rows()
+            date_entry.entry.focus_set()
+            self.canvas.update_idletasks()
+            self.canvas.yview_moveto(1)
 
     def delete_row(self, row) -> None:
         self.rows.remove(row)
@@ -206,9 +341,14 @@ class CompanyHolidayEditor(_ConfigDialog):
         self.arrange_rows()
 
     def arrange_rows(self) -> None:
+        self.summary.configure(text=f"当前共 {len(self.rows)} 天；每一天均可单独修改或删除。")
         for index, (_, widgets) in enumerate(self.rows, 1):
             for column, widget in enumerate(widgets):
                 widget.grid(row=index, column=column, sticky="ew", padx=(0, 8), pady=4)
+
+    def scroll_rows(self, event) -> str:
+        self.canvas.yview_scroll(-1 if event.delta > 0 else 1, "units")
+        return "break"
 
     def values(self) -> list[dict[str, str]]:
         return [{key: variable.get() if key == "note" else variable.get().strip() for key, variable in variables.items()} for variables, _ in self.rows]
