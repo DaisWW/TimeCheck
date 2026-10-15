@@ -10,6 +10,12 @@ import tempfile
 
 from send2trash import send2trash
 
+_RECYCLE_ERRORS = (OSError,)
+if os.name == "nt":
+    from pywintypes import com_error
+
+    _RECYCLE_ERRORS += (com_error,)
+
 
 def is_link(path: Path) -> bool:
     info = path.lstat()
@@ -95,7 +101,7 @@ def recycle_entries(directory: Path, paths: list[Path]) -> int:
     for path in selected:
         try:
             send2trash(str(path))
-        except OSError as error:
+        except _RECYCLE_ERRORS as error:
             raise OSError(f"无法移到回收站：{path}\n{error}\n已移走 {completed}/{len(selected)} 项，其余保留。请关闭占用文件后重试。") from error
         completed += 1
     return completed

@@ -99,6 +99,24 @@ class FileManagerTest(unittest.TestCase):
                 recycle_entries(self.input, [first, second])
             self.assertEqual(recycle.call_count, 2)
 
+    @unittest.skipUnless(os.name == "nt", "Windows 回收站 COM 错误验证")
+    def test_recycle_com_initialization_failure_reports_progress_and_preserves_files(self):
+        import pywintypes
+
+        list_entries(self.input)
+        first, second = self.input / "甲.xlsx", self.input / "乙.xlsx"
+        first.touch()
+        second.touch()
+        error = pywintypes.com_error(-2147221164, "Class not registered", None, None)
+        with patch("attendance_analyzer.file_manager.send2trash", side_effect=error) as recycle:
+            with self.assertRaisesRegex(OSError, "已移走 0/2 项") as caught:
+                recycle_entries(self.input, [first, second])
+            recycle.assert_called_once()
+        self.assertIs(caught.exception.__cause__, error)
+        self.assertIn("Class not registered", str(caught.exception))
+        self.assertTrue(first.is_file())
+        self.assertTrue(second.is_file())
+
     @unittest.skipUnless(os.name == "nt", "Windows 目录联接验证")
     def test_junction_cannot_redirect_managed_data_to_external_directory(self):
         import subprocess
