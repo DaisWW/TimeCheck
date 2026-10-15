@@ -137,12 +137,12 @@ python -m attendance_analyzer.cli "input\2026.5考勤.xlsx" -c config.json
 powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 ```
 
-脚本会安装依赖、校验 JSON、运行测试、构建不带控制台的 EXE，并生成 `dist\dingding-attendance.zip`。打包失败会保留错误信息，退出码为非零；不要把之前的旧 ZIP 当成本次新版本。
+脚本会安装依赖、校验 JSON、运行测试、构建不带控制台的 EXE，并生成 `build\dingding-attendance.zip`。发布文件位于 `build\dingding-attendance\`，构建中间文件位于 `build\pyinstaller\`；整个 `build/` 已被 Git 忽略。打包失败会保留错误信息，退出码为非零；不要把之前的旧 ZIP 当成本次新版本。
 
 ZIP 解压后的结构如下，模板集中在独立目录，不自动读取：
 
 ```text
-dist\dingding-attendance\
+build\dingding-attendance\
   dingding-attendance.exe
   config.json
   使用说明.txt

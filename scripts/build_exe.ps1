@@ -6,8 +6,9 @@
 $ErrorActionPreference = "Stop"
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot ".." )).Path
-$releaseDir = Join-Path $repoRoot (Join-Path "dist" $Name)
-$buildDir = Join-Path $repoRoot (Join-Path "build" $Name)
+$outputRoot = Join-Path $repoRoot "build"
+$releaseDir = Join-Path $outputRoot $Name
+$buildDir = Join-Path $outputRoot (Join-Path "pyinstaller" $Name)
 
 if (-not (Test-Path (Join-Path $repoRoot "main.py"))) {
     throw "Project entry point not found: $repoRoot\main.py"

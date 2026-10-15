@@ -51,7 +51,7 @@
 
 ## 一键发布
 
-开发机双击 `build_release.bat`，顺序执行依赖安装、JSON 校验、回归测试、PyInstaller 打包、ZIP 生成与完整性检查。失败返回非零并保留控制台，之前的 ZIP 不代表本次构建成功。
+开发机双击 `build_release.bat`，顺序执行依赖安装、JSON 校验、回归测试、PyInstaller 打包、ZIP 生成与完整性检查。成品为 `build/dingding-attendance.zip`，发布目录为 `build/dingding-attendance/`，中间文件放在 `build/pyinstaller/`；整个 `build/` 已被 Git 忽略。失败返回非零并保留控制台，之前的 ZIP 不代表本次构建成功。
 
 ZIP 只收录 EXE、正式 `config.json`、使用说明、独立默认模板和空的 `input/output/logs` 目录，避免将本地实际考勤、历史结果或日志打包。正式 JSON 属于发布内容，更新现有部署时 HR 需要保留自己的规则和公司假安排。
 
