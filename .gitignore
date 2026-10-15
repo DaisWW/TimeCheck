@@ -23,6 +23,8 @@ output/*
 outputs/
 *.xlsx
 *.xlsm
+window_paths.json
+window_paths_*.tmp
 
 # Local secrets and editor files
 .env

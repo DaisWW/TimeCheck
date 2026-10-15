@@ -4,10 +4,12 @@ import argparse
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime
 import io
+import json
 import os
 from pathlib import Path
 from queue import Empty, Queue
 import sys
+import tempfile
 from threading import Thread
 import traceback
 import tkinter as tk
@@ -15,6 +17,41 @@ from tkinter import filedialog, messagebox, ttk
 from tkinter.scrolledtext import ScrolledText
 
 from . import cli
+
+
+def load_window_paths(base_dir: Path, args: argparse.Namespace) -> tuple[dict[str, str], str]:
+    defaults = {"input": base_dir / "input", "output": base_dir / "output", "config": base_dir / "config.csv"}
+    settings_path = base_dir / "window_paths.json"
+    saved = {}
+    warning = ""
+    try:
+        saved = json.loads(settings_path.read_text(encoding="utf-8"))
+        if not isinstance(saved, dict) or saved.keys() != defaults.keys() or any(
+            not isinstance(value, str) or not value.strip() or "\0" in value or not Path(value).is_absolute()
+            for value in saved.values()
+        ):
+            raise ValueError("路径记录必须包含 input、output、config 三个完整路径")
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as error:
+        saved = {}
+        warning = f"无法恢复上次路径：{settings_path}\n{error}\n已显示启动参数或默认路径，请检查并重新选择后再统计。"
+    return {
+        key: str(Path(getattr(args, key) or saved.get(key) or value).expanduser().resolve())
+        for key, value in defaults.items()
+    }, warning
+
+
+def save_window_paths(base_dir: Path, paths: dict[str, str]) -> None:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=base_dir, prefix="window_paths_", suffix=".tmp", delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(paths, stream, ensure_ascii=False, indent=2)
+        temporary.replace(base_dir / "window_paths.json")
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 class _RunLog(io.TextIOBase):
@@ -87,13 +124,15 @@ class AttendanceWindow:
     def __init__(self, root: tk.Tk, base_dir: Path, args: argparse.Namespace):
         self.root = root
         self.base_dir = base_dir
-        self.config_path = Path(args.config).expanduser().resolve() if args.config else base_dir / "config.csv"
+        paths, path_warning = load_window_paths(base_dir, args)
+        self.config_path = Path(paths["config"])
+        self.config_value = tk.StringVar(value=str(self.config_path))
         self.events = Queue()
         self.running = False
         self.log_path = None
         self.result_dir = None
-        self.input_value = tk.StringVar(value=args.input or str(base_dir / "input"))
-        self.output_value = tk.StringVar(value=args.output or str(base_dir / "output"))
+        self.input_value = tk.StringVar(value=paths["input"])
+        self.output_value = tk.StringVar(value=paths["output"])
         self.status = tk.StringVar(value="就绪：请选择考勤文件或目录，然后开始统计。")
         self.counts = tk.StringVar(value="")
         root.title("钉钉考勤统计")
@@ -126,19 +165,21 @@ class AttendanceWindow:
         output_entry.grid(row=3, column=1, columnspan=2, sticky="ew")
         output_button = ttk.Button(frame, text="选择目录", command=self.select_output_directory)
         output_button.grid(row=3, column=3, padx=(8, 0))
-        ttk.Label(frame, text="每次统计新建一个带时间的结果目录，避免与旧结果混淆。").grid(
+        ttk.Label(frame, text="路径会自动记住；每次统计新建一个带时间的结果目录。").grid(
             row=4, column=1, columnspan=3, sticky="w"
         )
         config_frame = ttk.LabelFrame(frame, text="规则配置：保存 CSV 后再开始统计", padding=10)
         config_frame.grid(row=5, column=0, columnspan=4, sticky="ew", pady=16)
         config_frame.columnconfigure(0, weight=1)
-        ttk.Label(config_frame, text=str(self.config_path), wraplength=500).grid(row=0, column=0, sticky="w")
+        ttk.Label(config_frame, textvariable=self.config_value, wraplength=680).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        config_button = ttk.Button(config_frame, text="选择规则 CSV", command=self.select_config)
+        config_button.grid(row=1, column=0, sticky="w")
         rules_button = ttk.Button(config_frame, text="编辑考勤规则", command=lambda: self.open_path(self.config_path))
-        rules_button.grid(row=0, column=1, padx=(10, 0))
+        rules_button.grid(row=1, column=1, padx=(8, 0))
         holidays_button = ttk.Button(
             config_frame, text="编辑公司放假", command=lambda: self.open_path(self.config_path.parent / "公司放假.csv")
         )
-        holidays_button.grid(row=0, column=2, padx=(8, 0))
+        holidays_button.grid(row=1, column=2, padx=(8, 0))
         actions = ttk.Frame(frame)
         actions.grid(row=6, column=0, columnspan=4, sticky="ew")
         self.start_button = ttk.Button(actions, text="开始统计", command=self.start)
@@ -148,7 +189,7 @@ class AttendanceWindow:
         self.log_button = ttk.Button(actions, text="打开本次日志", command=lambda: self.open_path(self.log_path), state="disabled")
         self.log_button.pack(side="left")
         ttk.Button(actions, text="复制详情", command=self.copy_details).pack(side="right")
-        self.controls = [input_entry, output_entry, file_button, directory_button, output_button, rules_button, holidays_button, self.start_button]
+        self.controls = [input_entry, output_entry, file_button, directory_button, output_button, config_button, rules_button, holidays_button, self.start_button]
         self.status_label = ttk.Label(frame, textvariable=self.status, wraplength=850)
         self.status_label.grid(row=7, column=0, columnspan=4, sticky="w", pady=(14, 8))
         progress_frame = ttk.Frame(frame)
@@ -162,21 +203,45 @@ class AttendanceWindow:
             row=10, column=0, columnspan=4, sticky="w", pady=(10, 0)
         )
         root.after(100, self.poll)
+        if path_warning:
+            self.append_details(path_warning + "\n")
+            root.after(0, lambda: messagebox.showwarning("请检查恢复的路径", path_warning, parent=root))
 
     def select_file(self) -> None:
         path = filedialog.askopenfilename(title="选择钉钉考勤文件", filetypes=[("Excel 文件", "*.xlsx *.xlsm")])
         if path:
             self.input_value.set(path)
+            self.remember_paths()
 
     def select_input_directory(self) -> None:
         path = filedialog.askdirectory(title="选择考勤文件所在目录")
         if path:
             self.input_value.set(path)
+            self.remember_paths()
 
     def select_output_directory(self) -> None:
         path = filedialog.askdirectory(title="选择结果保存位置")
         if path:
             self.output_value.set(path)
+            self.remember_paths()
+
+    def select_config(self) -> None:
+        path = filedialog.askopenfilename(title="选择考勤规则 CSV", filetypes=[("CSV 配置文件", "*.csv")])
+        if path:
+            self.config_path = Path(path).resolve()
+            self.config_value.set(str(self.config_path))
+            self.remember_paths()
+
+    def remember_paths(self) -> None:
+        values = {"input": self.input_value.get().strip(), "output": self.output_value.get().strip(), "config": str(self.config_path)}
+        if not all(values.values()):
+            return
+        try:
+            save_window_paths(self.base_dir, {key: str(Path(value).expanduser().resolve()) for key, value in values.items()})
+        except (OSError, ValueError) as error:
+            message = f"无法保存窗口路径：{self.base_dir / 'window_paths.json'}\n{error}\n本次仍可统计，下次打开可能需要重新选择路径。"
+            self.append_details(message + "\n")
+            messagebox.showwarning("路径未记住", message, parent=self.root)
 
     def start(self) -> None:
         if self.running:
@@ -196,6 +261,7 @@ class AttendanceWindow:
         self.details.configure(state="normal")
         self.details.delete("1.0", "end")
         self.details.configure(state="disabled")
+        self.remember_paths()
         for control in self.controls:
             control.configure(state="disabled")
         self.result_button.configure(state="disabled")
@@ -262,6 +328,7 @@ class AttendanceWindow:
         if self.running:
             messagebox.showinfo("正在统计", "请等待本次统计结束后关闭窗口，避免中断结果写入。", parent=self.root)
         else:
+            self.remember_paths()
             self.root.destroy()
 
 
