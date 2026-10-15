@@ -35,5 +35,11 @@
   "report": {
     "output_suffix": "_加班分析.xlsx"
   },
-  "company_holidays": []
+  "company_holidays": [
+    {
+      "date": "2026-09-30",
+      "period": "全天",
+      "note": ""
+    }
+  ]
 }
