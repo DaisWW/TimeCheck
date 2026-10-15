@@ -7,7 +7,7 @@ from pathlib import Path
 from queue import Queue
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, call, patch
 
 from attendance_analyzer import gui
 from attendance_analyzer.excel_reader import WorkbookInputError
@@ -95,6 +95,32 @@ def drain(events):
     return items
 
 
+class GuiDirectoryTest(unittest.TestCase):
+    def test_start_rejects_file_or_missing_input_and_file_output_before_starting_worker(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            input_dir = root / "每月考勤"
+            input_dir.mkdir()
+            file_path = root / "考勤.xlsx"
+            file_path.touch()
+            for input_path, output_path, title, invalid_path in (
+                (file_path, root / "结果", "请选择考勤目录", file_path),
+                (root / "已移走", root / "结果", "请选择考勤目录", root / "已移走"),
+                (input_dir, file_path, "请选择输出目录", file_path),
+            ):
+                with self.subTest(input_path=input_path, output_path=output_path):
+                    window = Mock(running=False)
+                    window.input_value.get.return_value = str(input_path)
+                    window.output_value.get.return_value = str(output_path)
+                    with patch.object(gui.messagebox, "showerror") as error, patch.object(gui, "Thread") as worker:
+                        gui.AttendanceWindow.start(window)
+                    worker.assert_not_called()
+                    window.remember_paths.assert_not_called()
+                    self.assertFalse(window.running)
+                    self.assertEqual(error.call_args.args[0], title)
+                    self.assertIn(str(invalid_path), error.call_args.args[1])
+
+
 class GuiJobTest(unittest.TestCase):
     def test_missing_csv_stops_before_analysis_and_saves_readable_log(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -138,23 +164,30 @@ class GuiJobTest(unittest.TestCase):
             for fragment in ("每日统计 第 5 行", "事假 特殊格式", str(output_dir), "退出码 4"):
                 self.assertIn(fragment, log_text)
 
-    def test_success_completes_progress_without_writing_to_the_source(self):
+    def test_directory_success_processes_all_workbooks_into_selected_output_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             config = root / "config.csv"
             config.write_text("分类,配置项,值,说明\n工作日,每日工作分钟,450,\n", encoding="utf-8-sig")
-            input_path = root / "考勤.xlsx"
-            input_path.touch()
+            input_dir = root / "每月 考勤"
+            input_dir.mkdir()
+            inputs = [input_dir / "一月.xlsx", input_dir / "二月.xlsm"]
+            for path in inputs + [input_dir / "~$临时.xlsx", input_dir / "历史_加班分析.xlsx", input_dir / "说明.txt"]:
+                path.touch()
+            (input_dir / "子目录").mkdir()
+            (input_dir / "子目录/三月.xlsx").touch()
+            output_dir = root / "自选 输出目录" / "本次结果"
             events = Queue()
             with patch("attendance_analyzer.cli.AttendanceAnalyzer") as analyzer, patch("attendance_analyzer.cli.OvertimeReportWriter") as writer:
                 analyzer.return_value.analyze_overtime.return_value = []
                 analyzer.return_value.last_input_issues = []
-                gui.run_job(input_path, root / "本次结果", config, root / "logs", events)
-                writer.return_value.write.assert_called_once_with(root / "本次结果" / "考勤_加班分析.xlsx", [], [])
+                gui.run_job(input_dir, output_dir, config, root / "logs", events)
+                self.assertEqual(analyzer.return_value.analyze_overtime.call_args_list, [call(path) for path in inputs])
+                self.assertEqual(writer.return_value.write.call_args_list, [call(output_dir / f"{path.stem}_加班分析.xlsx", [], []) for path in inputs])
             items = drain(events)
             self.assertEqual(items[-1][0:2], ("finished", 0))
-            self.assertEqual(items[-1][3:], (1, 1))
-            self.assertIn(("progress", 1, 1, "统计完成"), items)
+            self.assertEqual(items[-1][3:], (2, 2))
+            self.assertIn(("progress", 2, 2, "已完成：二月.xlsm"), items)
 
     def test_unexpected_failure_is_preserved_and_reported(self):
         with tempfile.TemporaryDirectory() as directory:

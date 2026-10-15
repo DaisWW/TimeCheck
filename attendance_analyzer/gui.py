@@ -133,7 +133,7 @@ class AttendanceWindow:
         self.result_dir = None
         self.input_value = tk.StringVar(value=paths["input"])
         self.output_value = tk.StringVar(value=paths["output"])
-        self.status = tk.StringVar(value="就绪：请选择考勤文件或目录，然后开始统计。")
+        self.status = tk.StringVar(value="就绪：请选择考勤目录和输出目录，然后开始统计。")
         self.counts = tk.StringVar(value="")
         root.title("钉钉考勤统计")
         root.geometry("960x700")
@@ -150,20 +150,18 @@ class AttendanceWindow:
         frame.columnconfigure(1, weight=1)
         frame.rowconfigure(9, weight=1)
         ttk.Label(frame, text="考勤统计", style="Title.TLabel").grid(row=0, column=0, columnspan=4, sticky="w")
-        ttk.Label(frame, text="选择钉钉导出的 Excel 或目录，检查规则后开始统计。").grid(
+        ttk.Label(frame, text="批量处理考勤目录第一层的 .xlsx / .xlsm 文件，检查规则后开始统计。").grid(
             row=1, column=0, columnspan=4, sticky="w", pady=(5, 18)
         )
-        ttk.Label(frame, text="考勤文件 / 目录").grid(row=2, column=0, sticky="w", padx=(0, 12))
+        ttk.Label(frame, text="考勤输入目录").grid(row=2, column=0, sticky="w", padx=(0, 12))
         input_entry = ttk.Entry(frame, textvariable=self.input_value)
-        input_entry.grid(row=2, column=1, sticky="ew")
-        file_button = ttk.Button(frame, text="选择文件", command=self.select_file)
-        file_button.grid(row=2, column=2, padx=(8, 0))
-        directory_button = ttk.Button(frame, text="选择目录", command=self.select_input_directory)
+        input_entry.grid(row=2, column=1, columnspan=2, sticky="ew")
+        directory_button = ttk.Button(frame, text="选择考勤目录", command=self.select_input_directory)
         directory_button.grid(row=2, column=3, padx=(8, 0))
-        ttk.Label(frame, text="结果保存位置").grid(row=3, column=0, sticky="w", pady=10)
+        ttk.Label(frame, text="结果输出目录").grid(row=3, column=0, sticky="w", pady=10)
         output_entry = ttk.Entry(frame, textvariable=self.output_value)
         output_entry.grid(row=3, column=1, columnspan=2, sticky="ew")
-        output_button = ttk.Button(frame, text="选择目录", command=self.select_output_directory)
+        output_button = ttk.Button(frame, text="选择输出目录", command=self.select_output_directory)
         output_button.grid(row=3, column=3, padx=(8, 0))
         ttk.Label(frame, text="路径会自动记住；每次统计新建一个带时间的结果目录。").grid(
             row=4, column=1, columnspan=3, sticky="w"
@@ -189,7 +187,7 @@ class AttendanceWindow:
         self.log_button = ttk.Button(actions, text="打开本次日志", command=lambda: self.open_path(self.log_path), state="disabled")
         self.log_button.pack(side="left")
         ttk.Button(actions, text="复制详情", command=self.copy_details).pack(side="right")
-        self.controls = [input_entry, output_entry, file_button, directory_button, output_button, config_button, rules_button, holidays_button, self.start_button]
+        self.controls = [input_entry, output_entry, directory_button, output_button, config_button, rules_button, holidays_button, self.start_button]
         self.status_label = ttk.Label(frame, textvariable=self.status, wraplength=850)
         self.status_label.grid(row=7, column=0, columnspan=4, sticky="w", pady=(14, 8))
         progress_frame = ttk.Frame(frame)
@@ -207,20 +205,14 @@ class AttendanceWindow:
             self.append_details(path_warning + "\n")
             root.after(0, lambda: messagebox.showwarning("请检查恢复的路径", path_warning, parent=root))
 
-    def select_file(self) -> None:
-        path = filedialog.askopenfilename(title="选择钉钉考勤文件", filetypes=[("Excel 文件", "*.xlsx *.xlsm")])
-        if path:
-            self.input_value.set(path)
-            self.remember_paths()
-
     def select_input_directory(self) -> None:
-        path = filedialog.askdirectory(title="选择考勤文件所在目录")
+        path = filedialog.askdirectory(title="选择考勤输入目录", mustexist=True)
         if path:
             self.input_value.set(path)
             self.remember_paths()
 
     def select_output_directory(self) -> None:
-        path = filedialog.askdirectory(title="选择结果保存位置")
+        path = filedialog.askdirectory(title="选择结果输出目录")
         if path:
             self.output_value.set(path)
             self.remember_paths()
@@ -247,11 +239,17 @@ class AttendanceWindow:
         if self.running:
             return
         if not self.input_value.get().strip() or not self.output_value.get().strip():
-            messagebox.showerror("请先选择路径", "请填写考勤文件或目录，以及结果保存位置。", parent=self.root)
+            messagebox.showerror("请先选择目录", "请选择考勤输入目录和结果输出目录。", parent=self.root)
             return
         try:
             input_path = Path(self.input_value.get().strip()).expanduser().resolve()
             output_root = Path(self.output_value.get().strip()).expanduser().resolve()
+            if not input_path.is_dir():
+                messagebox.showerror("请选择考勤目录", f"考勤输入必须是已存在的目录：\n{input_path}\n请点击“选择考勤目录”重新选择。", parent=self.root)
+                return
+            if output_root.exists() and not output_root.is_dir():
+                messagebox.showerror("请选择输出目录", f"输出位置必须是目录，当前路径是文件：\n{output_root}\n请点击“选择输出目录”重新选择。", parent=self.root)
+                return
         except (OSError, ValueError) as error:
             messagebox.showerror("路径无效", str(error), parent=self.root)
             return
@@ -334,7 +332,7 @@ class AttendanceWindow:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="钉钉考勤统计窗口")
-    parser.add_argument("input", nargs="?", help="预先选择考勤文件或目录")
+    parser.add_argument("input", nargs="?", help="预先选择考勤输入目录，批量处理目录第一层的 Excel")
     parser.add_argument("-c", "--config", help="CSV 基础配置路径")
     parser.add_argument("-o", "--output", help="结果保存目录")
     args = parser.parse_args(argv)
