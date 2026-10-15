@@ -1,6 +1,6 @@
 # 钉钉考勤加班分析工具
 
-用于分析钉钉考勤导出 Excel 的 Python 工具，可打包成 Windows EXE 供 HR 使用。
+用于分析钉钉考勤导出 Excel 的工具，提供 Windows 桌面窗口和命令行，可打包成 ZIP 交给 HR 使用。
 
 ## 当前范围
 
@@ -25,13 +25,17 @@
 
 ## 运行
 
-在开发机双击根目录的 `run_attendance.bat`，或运行以下命令。报错后 BAT 会保留窗口。
+给 HR 使用时，发送一键打包得到的 ZIP，完整解压后双击 `dingding-attendance.exe`，无需安装 Python。窗口可选择考勤文件或目录、编辑 CSV、显示处理阶段、打开本次结果和日志。详细步骤见 [HR 使用说明](docs/HR使用说明.txt)，交互及错误处理设计见 [HR 交互方案](docs/hr_interaction.md)。
+
+在有 Python 的开发环境中，运行 `python main.py` 打开同样的窗口；也可继续双击项目根目录的 `run_attendance.bat` 使用命令行批量统计，报错后窗口会保留。
+
+也可以在命令行中运行：
 
 ```powershell
 python -m attendance_analyzer.cli
 ```
 
-命令行会批量分析 `input` 中所有 `.xlsx` 和 `.xlsm` 文件，并将结果写入 `output` 目录。文件名包含配置后缀 `_加班分析` 的已有结果文件会被跳过。同名的 `.xlsx` 和 `.xlsm` 会在开始处理前报错，请先重命名其中一个，避免结果覆盖。
+命令行会批量分析 `input` 中所有 `.xlsx` 和 `.xlsm` 文件，并将结果写入 `output` 目录。文件名包含配置后缀 `_加班分析` 的已有结果文件会被跳过。同名的 `.xlsx` 和 `.xlsm` 会在开始处理前报错，请先重命名其中一个，避免结果覆盖。窗口模式每次在选定结果目录中新建带时间的子目录，避免与旧结果混淆。
 
 同一员工每个自然月须使用一份完整考勤文件；迟到宽限在各文件内独立分配，不支持拆月后分别计算。
 
@@ -64,7 +68,7 @@ python -m attendance_analyzer.cli "input\2026.5考勤.xlsx" -c config.csv
 
 ## 配置公司全天或半天放假
 
-用 Excel/WPS 打开与当前基础配置同目录的 **`公司放假.csv`**，每行填写一个日期，保存为 CSV UTF-8（逗号分隔），再重新运行命令行。程序会显示本次读取的公司假文件路径及配置天数。只有“日期、时段、备注”表头而没有数据行，表示没有公司假；随项目提供的正式文件默认就是空表，以下日期仅为填写示例：
+用 Excel/WPS 打开与当前基础配置同目录的 **`公司放假.csv`**，每行填写一个日期，保存为 CSV UTF-8（逗号分隔），再在窗口点击“开始统计”，或重新运行命令行。程序会显示本次读取的公司假文件路径及配置天数。只有“日期、时段、备注”表头而没有数据行，表示没有公司假；随项目提供的正式文件默认就是空表，以下日期仅为填写示例：
 
 | 日期 | 时段 | 备注 |
 | --- | --- | --- |
@@ -94,11 +98,12 @@ python -m attendance_analyzer.cli "input\2026.5考勤.xlsx" -c config.csv
 - `scripts/`：打包脚本。
 - `input/`：待分析的钉钉 Excel；实际考勤文件只保存在本地，不提交到 Git。
 - `output/`：分析结果；历史结果可放在 `output/archive/`，也不提交到 Git。
-- `main.py`：命令行和 EXE 的顶层入口。
+- `main.py`：桌面窗口和 EXE 的顶层入口。
+- `build_release.bat`：开发机的一键打包入口，输出 ZIP。
 - `config.csv`：当前使用的中文规则配置；`config.example.csv`：完整备用模板。
 - `公司放假.csv`：全员公司放假安排，默认空表；`公司放假.example.csv`：填写示例。
 
-打包为 `.exe` 后，可使用发布目录的 `run_attendance.bat` 批量处理 `input`，或把单个钉钉 Excel 拖到 EXE 上运行。
+打包为 `.exe` 后，双击打开窗口，默认选中 `input` 和 `output` 目录。也可以把单个钉钉 Excel 拖到 EXE 上预先选中文件，再点击“开始统计”。
 
 ## 设计
 
@@ -107,8 +112,9 @@ python -m attendance_analyzer.cli "input\2026.5考勤.xlsx" -c config.csv
 - `rules.py`：负责单日加班、迟到原始分钟和审批差异计算。
 - `analyzer.py`：编排读取器和规则计算，并按员工/月分配迟到宽限。
 - `report_writer.py`：写出最终分析工作簿。
-- `cli.py`：命令行入口和批量处理流程。
-- `main.py`：EXE 的顶层入口，避免直接打包包内模块时出现相对导入问题。
+- `cli.py`：命令行入口和窗口共用的执行流程。
+- `gui.py`：HR 窗口、后台执行、阶段进度、可复制详情和运行日志。
+- `main.py`：桌面 EXE 的顶层入口，避免直接打包包内模块时出现相对导入问题。
 
 ## 输出内容
 
@@ -125,16 +131,40 @@ python -m attendance_analyzer.cli "input\2026.5考勤.xlsx" -c config.csv
 
 ## 打包 EXE
 
-在 Windows 开发机安装 Python 后执行：
+在 Windows 64 位开发机安装 Python（含 Tcl/Tk，且已加入 PATH），双击 **`build_release.bat`** 即可一键打包。首次打包需联网安装依赖。HR 机器无需安装 Python，也无需联网统计；查看报表和编辑 CSV 可使用 Excel/WPS。
+
+也可在命令行执行：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 ```
 
-脚本安装依赖并构建控制台 EXE，生成 `dist\dingding-attendance`。将整个目录复制到 HR 的 Windows 电脑后运行，无需安装 Python。
+脚本会安装依赖、校验 CSV、运行测试、构建不带控制台的 EXE，并生成 `dist\dingding-attendance.zip`。打包失败会保留错误信息，退出码为非零；不要把之前的旧 ZIP 当成本次新版本。
 
-发布目录包含 EXE、`run_attendance.bat`、正式 `config.csv` 和 `公司放假.csv`、对应填写模板及空的 `input/output` 目录。修改正式 CSV 后重新运行即可生效，模板不会自动读取。双击 BAT 批量处理 input；也可运行：
+ZIP 解压后的结构如下，模板集中在独立目录，不自动读取：
+
+```text
+dist\dingding-attendance\
+  dingding-attendance.exe
+  config.csv
+  公司放假.csv
+  使用说明.txt
+  配置模板\
+    config.csv
+    公司放假.csv
+  input\
+  output\
+  logs\
+```
+
+ZIP 使用明确文件清单生成，`input`、`output`、`logs` 在 ZIP 内始终为空，不会带入开发机上的实际考勤、报表和日志；当前正式 CSV 中的规则和公司假安排会随包分发。
+
+将 ZIP 发给 HR，右键“全部解压缩”到桌面等可写目录后双击 EXE，不要在压缩包里直接运行。打开窗口后选择文件/目录，确认规则，再开始统计。也支持用参数预选文件或结果保存目录：
 
 ```powershell
-dingding-attendance.exe "考勤.xlsx" -c config.csv -o output\结果.xlsx
+dingding-attendance.exe "考勤.xlsx" -c config.csv -o output
 ```
+
+窗口每次在所选结果位置新建 `统计_日期_时间` 子目录。失败后弹出一次简短提示，完整错误和配置路径保留在窗口详情及 `logs` 文件中；支持复制详情、打开日志。批量遇错停止，显示已完成数量，之前的成功结果保留，后续文件未处理。
+
+HR 可点击“编辑考勤规则”“编辑公司放假”打开 CSV，保存后重新统计，无需重新打包。桌面窗口明确读取同目录的 `config.csv`，缺失时会报错；命令行仍保留内置默认值的行为。基础规则需恢复时，可从“配置模板”复制 `config.csv` 覆盖正式文件；公司假模板含填写示例，须先改成实际日期。

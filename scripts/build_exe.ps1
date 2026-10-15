@@ -21,12 +21,21 @@ try {
         throw "Python dependency installation failed with exit code $LASTEXITCODE"
     }
 
+    & $Python -X utf8 -c "from pathlib import Path; from attendance_analyzer.config import AppConfig; AppConfig.load(Path('config.csv')); import tkinter; print('CSV configuration and Tk runtime OK')"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Build preflight failed. Check CSV files and install Python with Tcl/Tk support."
+    }
+    & $Python -X utf8 -m unittest discover -s tests
+    if ($LASTEXITCODE -ne 0) {
+        throw "Tests failed; release packaging stopped."
+    }
+
     New-Item -ItemType Directory -Force -Path $releaseDir, $buildDir | Out-Null
     & $Python -m PyInstaller `
         --noconfirm `
         --clean `
         --onefile `
-        --console `
+        --windowed `
         --name $Name `
         --distpath $releaseDir `
         --workpath $buildDir `
@@ -37,20 +46,29 @@ try {
         throw "PyInstaller build failed with exit code $LASTEXITCODE"
     }
 
-    foreach ($legacyConfigName in @("config.toml", "config.example.toml")) {
+    foreach ($legacyConfigName in @("config.toml", "config.example.toml", "config.example.csv", "公司放假.example.csv", "run_attendance.bat")) {
         $legacyConfigPath = Join-Path $releaseDir $legacyConfigName
         if (Test-Path -LiteralPath $legacyConfigPath -PathType Leaf) {
             Remove-Item -LiteralPath $legacyConfigPath -Force
         }
     }
-    foreach ($configName in @("config.csv", "config.example.csv", "公司放假.csv", "公司放假.example.csv")) {
-        Copy-Item (Join-Path $repoRoot $configName) (Join-Path $releaseDir $configName) -Force
+    $templatesDir = Join-Path $releaseDir "配置模板"
+    New-Item -ItemType Directory -Force -Path $templatesDir | Out-Null
+    Copy-Item (Join-Path $repoRoot "config.csv") (Join-Path $releaseDir "config.csv") -Force
+    Copy-Item (Join-Path $repoRoot "config.example.csv") (Join-Path $templatesDir "config.csv") -Force
+    Copy-Item (Join-Path $repoRoot "公司放假.csv") (Join-Path $releaseDir "公司放假.csv") -Force
+    Copy-Item (Join-Path $repoRoot "公司放假.example.csv") (Join-Path $templatesDir "公司放假.csv") -Force
+    Copy-Item (Join-Path $repoRoot "docs\HR使用说明.txt") (Join-Path $releaseDir "使用说明.txt") -Force
+    New-Item -ItemType Directory -Force -Path (Join-Path $releaseDir "input"), (Join-Path $releaseDir "output"), (Join-Path $releaseDir "logs") | Out-Null
+
+    & $Python -X utf8 (Join-Path $PSScriptRoot "package_release.py") $releaseDir
+    if ($LASTEXITCODE -ne 0) {
+        throw "ZIP packaging failed with exit code $LASTEXITCODE"
     }
-    Copy-Item (Join-Path $PSScriptRoot "run_attendance.bat") (Join-Path $releaseDir "run_attendance.bat") -Force
-    New-Item -ItemType Directory -Force -Path (Join-Path $releaseDir "input"), (Join-Path $releaseDir "output") | Out-Null
 
     Write-Host "Build complete: $releaseDir"
-    Write-Host "Copy the entire directory to a Windows machine without Python."
+    Write-Host "Send this ZIP to HR: $releaseDir.zip"
+    Write-Host "Extract the entire ZIP, then double-click $Name.exe. No Python is required."
 }
 finally {
     Pop-Location

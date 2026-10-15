@@ -1,4 +1,4 @@
-from attendance_analyzer.cli import main
+from attendance_analyzer.gui import main
 
 
 if __name__ == "__main__":
