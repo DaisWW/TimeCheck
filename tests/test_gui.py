@@ -164,10 +164,16 @@ class GuiFileListTest(unittest.TestCase):
         self.root.geometry("900x620")
         self.window.details_visible.set(True)
         self.window.toggle_details()
+        self.window.status.set(gui.outcome_message(4, 1, 3))
         self.root.deiconify()
         self.root.update()
         for tree in self.window.trees.values():
             self.assertGreaterEqual(tree.winfo_height(), 60)
+            panel = tree.master
+            footer = panel.winfo_children()[-1]
+            self.assertLessEqual(footer.winfo_y() + footer.winfo_height(), panel.winfo_height())
+        for widget in (self.window.start_button, self.window.result_button, self.window.details_frame):
+            self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), self.root.winfo_rooty() + self.root.winfo_height())
         tree = self.window.trees["input"]
         tree.xview_moveto(1)
         self.assertGreater(tree.xview()[0], 0)

@@ -5,6 +5,8 @@ from datetime import date
 import tkinter as tk
 from tkinter import ttk
 
+from . import ui_theme as ui
+
 
 WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
@@ -22,14 +24,15 @@ def parse_date_text(text: str) -> date:
 
 class DateField(ttk.Frame):
     def __init__(self, parent, variable: tk.StringVar, on_select=None):
-        super().__init__(parent)
+        surface = parent.cget("style") == "Surface.TFrame"
+        super().__init__(parent, style="Surface.TFrame" if surface else "TFrame")
         self.variable = variable
         self.on_select = on_select
         self.calendar = None
         self.entry = ttk.Entry(self, width=12, textvariable=variable)
         self.entry.pack(side="left", fill="x", expand=True)
-        ttk.Button(self, text="日历", width=4, padding=(4, 3), command=self.open_calendar).pack(side="left", padx=4)
-        self.weekday = ttk.Label(self, width=4)
+        ttk.Button(self, text="日历", width=4, padding=(6, 5), command=self.open_calendar).pack(side="left", padx=5)
+        self.weekday = ttk.Label(self, width=4, style="Muted.Surface.TLabel" if surface else "Muted.TLabel")
         self.weekday.pack(side="left")
         self.trace = variable.trace_add("write", self.update_weekday)
         self.update_weekday()
@@ -57,6 +60,8 @@ class DateField(ttk.Frame):
 class _CalendarPopup(tk.Toplevel):
     def __init__(self, field: DateField):
         super().__init__(field)
+        ui.style_window(self)
+        self.configure(background=ui.PAPER)
         self.withdraw()
         self.title("选择日期")
         self.protocol("WM_DELETE_WINDOW", self.destroy)
@@ -69,39 +74,39 @@ class _CalendarPopup(tk.Toplevel):
             self.selected = parse_date_text(self.target.get())
         except ValueError:
             self.selected = date.today()
-        body = ttk.Frame(self, padding=12)
+        body = ttk.Frame(self, style="Surface.TFrame", padding=16)
         body.pack(fill="both", expand=True)
-        header = ttk.Frame(body)
+        header = ttk.Frame(body, style="Surface.TFrame")
         header.pack(fill="x", pady=(0, 8))
-        self.previous = ttk.Button(header, text="◀", width=3, command=lambda: self.move_month(-1))
+        self.previous = ttk.Button(header, text="‹", width=3, style="Quiet.TButton", command=lambda: self.move_month(-1))
         self.previous.pack(side="left")
         self.year = ttk.Spinbox(header, from_=1, to=9999, width=6, command=self.render)
         self.year.insert(0, str(self.selected.year))
         self.year.pack(side="left", padx=(8, 2))
-        ttk.Label(header, text="年").pack(side="left")
+        ttk.Label(header, text="年", style="Surface.TLabel").pack(side="left")
         self.month = ttk.Spinbox(header, from_=1, to=12, width=3, command=self.render)
         self.month.insert(0, str(self.selected.month))
         self.month.pack(side="left", padx=(8, 2))
-        ttk.Label(header, text="月").pack(side="left", padx=(0, 8))
-        self.next = ttk.Button(header, text="▶", width=3, command=lambda: self.move_month(1))
+        ttk.Label(header, text="月", style="Surface.TLabel").pack(side="left", padx=(0, 8))
+        self.next = ttk.Button(header, text="›", width=3, style="Quiet.TButton", command=lambda: self.move_month(1))
         self.next.pack(side="right")
         for entry in (self.year, self.month):
             for event in ("<KeyRelease>", "<FocusOut>"):
                 entry.bind(event, self.render)
-        days = ttk.Frame(body)
+        days = ttk.Frame(body, style="Surface.TFrame")
         days.pack(fill="x")
         for column, text in enumerate("一二三四五六日"):
-            ttk.Label(days, text=text, anchor="center").grid(row=0, column=column, sticky="ew")
+            ttk.Label(days, text=text, anchor="center", style="Muted.Surface.TLabel").grid(row=0, column=column, sticky="ew", pady=(6, 8))
             days.columnconfigure(column, weight=1)
         self.buttons = []
         for index in range(42):
-            button = ttk.Button(days, width=3, padding=(6, 5))
+            button = ttk.Button(days, width=3, style="Calendar.TButton")
             button.grid(row=index // 7 + 1, column=index % 7, padx=2, pady=2, sticky="ew")
             self.buttons.append(button)
-        self.hint = ttk.Label(body)
+        self.hint = ttk.Label(body, style="Muted.Surface.TLabel")
         self.hint.pack(anchor="w", pady=8)
-        ttk.Button(body, text="今天", command=lambda: self.choose(date.today())).pack(side="left")
-        ttk.Button(body, text="取消", command=self.destroy).pack(side="right")
+        ttk.Button(body, text="今天", style="Link.TButton", command=lambda: self.choose(date.today())).pack(side="left")
+        ttk.Button(body, text="取消", style="Quiet.TButton", command=self.destroy).pack(side="right")
         self.bind("<Escape>", self.cancel)
         self.render()
         self.update_idletasks()
@@ -128,7 +133,7 @@ class _CalendarPopup(tk.Toplevel):
         try:
             year, month = self.month_value()
         except ValueError:
-            self.hint.configure(text="请填写有效年月：年份1–9999，月份1–12。", foreground="#b42318")
+            self.hint.configure(text="请填写有效年月：年份1–9999，月份1–12。", foreground=ui.ERROR)
             self.previous.configure(state="disabled")
             self.next.configure(state="disabled")
             return
@@ -142,7 +147,7 @@ class _CalendarPopup(tk.Toplevel):
                     button.configure(text=str(day), state="normal", command=lambda chosen=value: self.choose(chosen))
                     if value == self.selected:
                         button.state(["pressed"])
-        self.hint.configure(text=f"当前：{self.selected.isoformat()}（{WEEKDAYS[self.selected.weekday()]}）", foreground="#555555")
+        self.hint.configure(text=f"当前：{self.selected.isoformat()}（{WEEKDAYS[self.selected.weekday()]}）", foreground=ui.MUTED)
 
     def move_month(self, offset: int) -> None:
         year, month = self.month_value()

@@ -123,6 +123,22 @@ class ConfigDialogTest(unittest.TestCase):
         self.assertEqual(reopened.variables["workday.work_minutes"].get(), "420")
         self.assertFalse(reopened.dirty())
 
+    def test_rules_fit_minimum_window_without_clipping_fields_or_help(self):
+        self.root.deiconify()
+        try:
+            editor = self.editor(RulesEditor)
+            editor.geometry("760x700")
+            editor.deiconify()
+            for tab in editor.notebook.tabs():
+                editor.notebook.select(tab)
+                editor.update()
+                page = editor.nametowidget(tab)
+                for widget in page.winfo_children():
+                    self.assertLessEqual(widget.winfo_y() + widget.winfo_height(), page.winfo_height())
+                    self.assertLessEqual(widget.winfo_x() + widget.winfo_width(), page.winfo_width())
+        finally:
+            self.root.withdraw()
+
     def test_invalid_rule_stays_open_focuses_field_and_does_not_write(self):
         editor = self.editor(RulesEditor)
         before = self.path.read_bytes()
