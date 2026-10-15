@@ -38,6 +38,8 @@ class ApprovalParseIssue:
     kind: str
     message: str
     blocks_summary: bool = True
+    start: datetime | None = None
+    end: datetime | None = None
 
 
 def parse_overtime_approval_intervals(text: str, year: int) -> list[OvertimeApprovalInterval]:
@@ -136,6 +138,8 @@ def _parse_approval_text(
                 kind=kind,
                 message="存在补卡申请；当前不会自动用审批替代原始打卡，请 HR 确认后补卡并重新统计。",
                 blocks_summary=False,
+                start=start,
+                end=end,
             ))
             continue
         if kind == "加班":
