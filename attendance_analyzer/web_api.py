@@ -291,7 +291,8 @@ class WebApi:
             config = apply_rule_values(config, values) if kind == "rules" else replace(
                 config, company_holidays=parse_company_holidays(values))
             config.save(self._config_path)
-            return self._settings(config, kind)
+            values = self._settings(config, kind)
+            return {"values": values, "revision": _revision(values)}
 
     @endpoint
     def add_holiday_range(self, rows, start, end, period, note):

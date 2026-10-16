@@ -269,6 +269,19 @@ class WebSettingsTest(unittest.TestCase):
             self.assertIn("已被", self.api.save_settings(kind, first["values"], first["revision"])["error"])
             self.assertEqual(self.path.read_bytes(), before)
 
+    def test_save_returns_current_revision_for_continued_page_editing(self):
+        for kind in ("rules", "holidays"):
+            with self.subTest(kind=kind):
+                form = self.ok(self.api.get_settings(kind))
+                values = ({**form["values"], "workday.work_minutes": "420"} if kind == "rules" else
+                          [{"date": "2026-10-19", "period": "上午", "note": "活动"}])
+                saved = self.ok(self.api.save_settings(kind, values, form["revision"]))
+                latest = self.ok(self.api.get_settings(kind))
+                self.assertEqual(saved, {"values": latest["values"], "revision": latest["revision"]})
+                second = ({**saved["values"], "workday.work_minutes": "450"} if kind == "rules" else [])
+                saved_again = self.ok(self.api.save_settings(kind, second, saved["revision"]))
+                self.assertEqual(saved_again["values"], second)
+
     def test_holiday_ranges_can_edit_each_day_and_preserve_latest_rules(self):
         form = self.ok(self.api.get_settings("holidays"))
         rows = self.ok(self.api.add_holiday_range(form["values"], "2026-12-31", "2027-01-02", "全天", "跨年"))
