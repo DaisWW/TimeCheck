@@ -754,7 +754,7 @@ h2 {
   padding-right: 0;
 }
 .run-card {
-  margin-top: 18px;
+  margin-bottom: 18px;
   padding: 18px 20px 0;
   position: relative;
   background: linear-gradient(110deg, var(--panel) 60%, #1c2036);
@@ -810,7 +810,52 @@ h2 {
   align-items: center;
   margin: 16px 0 12px;
 }
+.run-stages {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  list-style: none;
+  padding: 0;
+  margin: 18px 0 0;
+  color: var(--subtle);
+  font-size: 12px;
+}
+.run-stages li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.run-stages li > span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 11px;
+}
+.run-stages .active {
+  color: var(--purple);
+}
+.run-stages .active > span {
+  background: var(--tint);
+  border-color: var(--purple-dark);
+}
+.run-stages .done {
+  color: var(--green);
+}
+.run-stages .done > span {
+  background: var(--green-tint);
+  border-color: var(--green);
+}
+.run-stages .failed {
+  color: var(--red);
+}
+.run-stages .failed > span {
+  border-color: var(--red);
+}
 .progress-track {
+  position: relative;
   height: 5px;
   flex: 1;
   background: var(--raised);
@@ -824,11 +869,17 @@ h2 {
   border-radius: 5px;
   transition: width 0.35s;
 }
-#progress-count {
+.progress-meta {
+  display: flex;
+  gap: 14px;
   font-size: 11px;
   color: var(--muted);
   min-width: 85px;
   text-align: right;
+}
+#run-elapsed {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .run-bottom {
   display: flex;
@@ -948,10 +999,13 @@ pre {
 .run-card.running .run-indicator > svg {
   animation: pulse 1.5s infinite;
 }
-.run-card.running #progress-fill {
-  min-width: 3%;
-  background-size: 200%;
-  animation: pulse 1.5s infinite;
+.progress-track.indeterminate #progress-fill {
+  width: 35% !important;
+  animation: progress-slide 1.6s ease-in-out infinite alternate;
+}
+@keyframes progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(285%); }
 }
 /* 原生 dialog 提供键盘焦点约束和模态语义。 */
 dialog {
@@ -1611,6 +1665,17 @@ textarea:focus {
   .run-bottom > span {
     max-width: 220px;
     line-height: 1.7;
+  }
+  .run-stages {
+    flex-wrap: wrap;
+    gap: 10px 16px;
+  }
+  .run-stages li {
+    flex-basis: calc(50% - 8px);
+  }
+  .progress-meta {
+    flex-direction: column;
+    gap: 4px;
   }
   .page-footer > span:last-child {
     display: none;

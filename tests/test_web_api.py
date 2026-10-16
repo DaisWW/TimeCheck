@@ -119,6 +119,40 @@ class WebApiTest(unittest.TestCase):
         self.assertEqual(self.api._phase, "error")
         self.assertTrue(self.api.close()["ok"])
 
+    def test_stage_elapsed_and_single_report_open_reset_for_the_next_run(self):
+        self.ok(self.api.files())
+        (self.base / "input/考勤.xlsx").touch()
+        with patch("attendance_analyzer.web_api.Thread"), patch("attendance_analyzer.web_api.monotonic") as clock:
+            clock.return_value = 100
+            self.ok(self.api.start())
+            self.api._queue.put(("stage", "save", "考勤.xlsx · 正在保存 Excel"))
+            clock.return_value = 102.5
+            working = self.ok(self.api.poll())
+            self.assertEqual((working["stage"], working["detail"], working["elapsed_seconds"]),
+                             ("save", "考勤.xlsx · 正在保存 Excel", 2.5))
+            self.assertEqual(working["completed"], 0)
+            self.assertEqual(working["report_id"], "")
+            self.api._result.mkdir()
+            report = self.api._result / "考勤_加班分析.xlsx"
+            report.touch()
+            self.api._queue.put(("finished", 0, None, 1, 1))
+            clock.return_value = 104
+            finished = self.ok(self.api.poll())
+            self.assertEqual(finished["phase"], "success")
+            self.assertEqual(finished["elapsed_seconds"], 4)
+            self.assertEqual(finished["report_id"], report.relative_to(self.base / "output").as_posix())
+            clock.return_value = 150
+            self.assertEqual(self.ok(self.api.poll())["elapsed_seconds"], 4)
+            with patch("attendance_analyzer.web_api.os.startfile") as startfile:
+                self.ok(self.api.open_path("output", finished["report_id"]))
+                startfile.assert_called_once_with(report)
+            self.ok(self.api.start())
+            restarted = self.ok(self.api.poll())
+            self.assertEqual((restarted["stage"], restarted["detail"], restarted["report_id"]), ("", "", ""))
+            self.assertEqual(restarted["elapsed_seconds"], 0)
+            self.api._queue.put(("finished", 4, None, 0, 1))
+            self.assertEqual(self.ok(self.api.poll())["report_id"], "")
+
     def test_exit_prevents_new_writes_before_http_server_stops(self):
         self.ok(self.api.close())
         for result in (self.api.start(), self.api.begin_upload([{"name": "a.xlsx", "size": 0}]),
@@ -219,6 +253,8 @@ class WebApiTest(unittest.TestCase):
         self.assertIn("退出码 4", status["log"])
         self.assertTrue(status["result"])
         self.assertTrue(status["log_available"])
+        self.assertEqual(status["report_id"], "")
+        self.assertGreater(status["elapsed_seconds"], 0)
         self.assertEqual(len(self.ok(self.api.files())["output"][0]["children"]), 2)
         incremental = self.ok(self.api.poll(status["cursor"], run_id))
         self.assertEqual(incremental["log"], "")

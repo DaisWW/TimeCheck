@@ -11,6 +11,7 @@ from attendance_analyzer import job_runner as gui
 from attendance_analyzer.config import AppConfig
 from attendance_analyzer.excel_reader import WorkbookInputError
 from attendance_analyzer.models import InputIssue
+from test_input_validation import valid_workbook
 
 
 def drain(events):
@@ -21,6 +22,25 @@ def drain(events):
 
 
 class GuiJobTest(unittest.TestCase):
+    def test_single_workbook_reports_processing_stages_before_completion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            AppConfig().save(root / "config.json")
+            source = root / "考勤.xlsx"
+            workbook = valid_workbook()
+            workbook.save(source)
+            workbook.close()
+            events = Queue()
+            gui.run_job(source, root / "output", root / "config.json", root / "logs", events)
+            items = drain(events)
+            stages = [item for item in items if item[0] == "stage"]
+            self.assertEqual(list(dict.fromkeys(item[1] for item in stages)),
+                             ["read", "calculate", "report", "save"])
+            self.assertTrue(all("考勤.xlsx" in item[2] for item in stages))
+            self.assertLess(items.index(stages[-1]), next(index for index, item in enumerate(items)
+                                                       if item[:3] == ("progress", 1, 1)))
+            self.assertEqual(items[-1][0:2], ("finished", 0))
+
     def test_missing_json_stops_before_analysis_and_saves_readable_log(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

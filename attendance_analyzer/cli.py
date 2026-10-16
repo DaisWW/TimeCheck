@@ -34,6 +34,7 @@ def main(
     *,
     output_dir: Path | None = None,
     progress: Callable[[int, int, str], None] | None = None,
+    stage: Callable[[str, str], None] | None = None,
 ) -> int:
     args = build_parser().parse_args(argv)
     config_path = find_default_config(args.config)
@@ -60,6 +61,7 @@ def main(
             code = _analyze_file(
                 input_path, output_path, config,
                 progress=(lambda status: progress(0, 1, status)) if progress else None,
+                stage=stage,
             )
             if code == 0 and progress:
                 progress(1, 1, "统计完成")
@@ -69,7 +71,7 @@ def main(
         input_dir = Path.cwd().resolve() / "input"
 
     output_dir = Path(args.output).expanduser().resolve() if args.output else (output_dir or Path.cwd().resolve() / "output")
-    return _analyze_directory(input_dir, output_dir, config, progress=progress)
+    return _analyze_directory(input_dir, output_dir, config, progress=progress, stage=stage)
 
 
 def _analyze_directory(
@@ -78,6 +80,7 @@ def _analyze_directory(
     config: AppConfig,
     *,
     progress: Callable[[int, int, str], None] | None = None,
+    stage: Callable[[str, str], None] | None = None,
 ) -> int:
     if not input_dir.is_dir():
         print(f"找不到输入目录：{input_dir}", file=sys.stderr)
@@ -106,6 +109,7 @@ def _analyze_directory(
         code = _analyze_file(
             input_path, output_path, config,
             progress=(lambda status: progress(index - 1, len(input_paths), status)) if progress else None,
+            stage=stage,
         )
         if code != 0:
             return code
@@ -123,6 +127,7 @@ def _analyze_file(
     config: AppConfig,
     *,
     progress: Callable[[str], None] | None = None,
+    stage: Callable[[str, str], None] | None = None,
 ) -> int:
     if input_path.suffix.lower() not in {".xlsx", ".xlsm"}:
         print(f"不支持的输入格式：{input_path}；请使用 .xlsx 或 .xlsm。", file=sys.stderr)
@@ -130,7 +135,8 @@ def _analyze_file(
     if input_path.resolve() == output_path.resolve():
         print("输出路径不能覆盖输入考勤文件。", file=sys.stderr)
         return 2
-    analyzer = AttendanceAnalyzer(config)
+    notify = (lambda key, detail: stage(key, f"{input_path.name} · {detail}")) if stage else None
+    analyzer = AttendanceAnalyzer(config, stage=notify)
     if progress:
         progress(f"读取和计算：{input_path.name}")
     print(f"正在读取和计算：{input_path.name}")
@@ -145,7 +151,7 @@ def _analyze_file(
         progress(f"生成报表：{input_path.name}")
     print(f"正在生成报表：{output_path.name}")
     try:
-        OvertimeReportWriter(config).write(output_path, results, analyzer.last_input_issues)
+        OvertimeReportWriter(config, stage=notify).write(output_path, results, analyzer.last_input_issues)
     except PermissionError:
         print(f"无法写入输出文件：{output_path}", file=sys.stderr)
         print("可能原因：文件正被 Excel 打开，或当前用户没有写入权限。", file=sys.stderr)

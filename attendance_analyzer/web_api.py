@@ -13,6 +13,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from threading import RLock, Thread
 import tempfile
+from time import monotonic
 import traceback
 from uuid import uuid4
 
@@ -62,6 +63,9 @@ class WebApi:
         self._status = "添加钉钉原始考勤，准备好后开始统计。"
         self._completed = self._total = 0
         self._result = self._log_path = None
+        self._stage = self._detail = self._report_id = ""
+        self._started_at = None
+        self._elapsed_seconds = 0
 
     def _directory(self, kind):
         if kind not in ("input", "output"):
@@ -326,6 +330,9 @@ class WebApi:
                 self._log = ""
                 self._completed, self._total = 0, len(inputs)
                 self._phase, self._status = "running", "正在检查规则与输入，请稍候…"
+                self._stage = self._detail = self._report_id = ""
+                self._started_at = monotonic()
+                self._elapsed_seconds = 0
                 self._running = True
             try:
                 def run():
@@ -353,16 +360,28 @@ class WebApi:
                     self._log += values[0]
                 elif event == "progress":
                     self._completed, self._total, self._status = values
+                elif event == "stage":
+                    self._stage, self._detail = values
                 elif event == "finished":
                     code, self._log_path, self._completed, self._total = values
                     self._running = False
                     self._phase = "success" if code == 0 else "error"
                     self._status = outcome_message(code, self._completed, self._total)
+                    if self._started_at is not None:
+                        self._elapsed_seconds = monotonic() - self._started_at
+                    if code == 0 and self._total == 1 and self._result:
+                        reports = list(self._result.glob("*.xlsx"))
+                        if len(reports) == 1:
+                            self._report_id = reports[0].relative_to(self._directory("output")).as_posix()
                     refresh = True
             if type(cursor) is not int or cursor < 0 or cursor > len(self._log) or run_id != self._run_id:
                 cursor = 0
             return {"busy": self._busy or self._running, "running": self._running, "phase": self._phase,
                     "status": self._status, "completed": self._completed, "total": self._total,
+                    "stage": self._stage, "detail": self._detail,
+                    "elapsed_seconds": (monotonic() - self._started_at
+                                        if self._running and self._started_at is not None else self._elapsed_seconds),
+                    "report_id": self._report_id,
                     "run_id": self._run_id, "log": self._log[cursor:], "cursor": len(self._log),
                     "result": bool(self._result and self._result.is_dir()),
                     "log_available": bool(self._log_path and self._log_path.is_file()),

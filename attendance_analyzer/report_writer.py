@@ -1,15 +1,19 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from copy import copy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import re
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from openpyxl import Workbook
+from openpyxl.cell import Cell
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.writer.excel import ExcelWriter
 
 from .config import AppConfig
 from .models import InputIssue, OvertimeResult
@@ -32,8 +36,9 @@ GRID_BORDER = Border(bottom=Side(style="hair", color="D9E2F3"))
 class OvertimeReportWriter:
     """Write one auditable workbook for one input month."""
 
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, *, stage: Callable[[str, str], None] | None = None):
         self._config = config
+        self._stage = stage
 
     def write(
         self,
@@ -47,6 +52,8 @@ class OvertimeReportWriter:
         period_start, period_end = _period_bounds(results)
 
         workbook = Workbook()
+        if self._stage:
+            self._stage("report", "正在生成总览和员工明细")
         overview = workbook.active
         overview.title = "总览"
         self._write_overview(overview, grouped, input_issues, period_start, period_end)
@@ -66,6 +73,8 @@ class OvertimeReportWriter:
                 period_start,
                 period_end,
             )
+            if self._stage:
+                self._stage("report", f"已生成 {employee_index} / {len(grouped)} 份员工明细")
 
         self._write_supplement_punch_notifications(workbook.create_sheet("待补卡通知"), results)
         self._write_approval_reviews(workbook.create_sheet("待审核清单"), results)
@@ -82,7 +91,10 @@ class OvertimeReportWriter:
             _finish_sheet(sheet)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        workbook.save(output_path)
+        if self._stage:
+            self._stage("save", "正在保存 Excel 报表，请稍候")
+        with ZipFile(output_path, "w", ZIP_DEFLATED, allowZip64=True, compresslevel=1) as archive:
+            ExcelWriter(workbook, archive).save()
 
     def _write_overview(
         self,
@@ -152,19 +164,19 @@ class OvertimeReportWriter:
             # _overview_row retains the former, fully auditable column set.
             # Put the compact HR-facing block before those hidden audit fields.
             output_row = row[:7] + friendly_row + row[7:]
-            sheet.append(output_row)
+            cells = _append_row(sheet, output_row)
             if output_row[header_index["漏卡天数"]]:
-                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+                _mark_row(cells, RED_FILL, RED_FONT)
             elif output_row[header_index["待审核天数"]]:
                 _mark_cells(
-                    sheet[sheet.max_row],
+                    cells,
                     {header_index["统计状态"], header_index["待审核天数"]},
                     AMBER_FILL,
                     AMBER_FONT,
                 )
             elif all_issue_count:
                 _mark_cells(
-                    sheet[sheet.max_row],
+                    cells,
                     {
                         header_index["统计状态"],
                         header_index["人工确认条数"],
@@ -226,7 +238,7 @@ class OvertimeReportWriter:
             day_issues = _issues_for_day(input_issues, employee_name, user_id, work_date)
             values = _employee_detail_row(result, work_date, day_issues, self._config, leave_types)
             holiday = self._config.company_holiday_on(work_date)
-            sheet.append(values + [
+            cells = _append_row(sheet, values + [
                 result.business_attendance_minutes if result else 0,
                 result.leave_unclassified_minutes if result else 0,
                 holiday.period if holiday else "", holiday.note if holiday else "",
@@ -239,10 +251,10 @@ class OvertimeReportWriter:
                 result.required_work_minutes if result else 0,
             ])
             if values[header_index["漏卡"]]:
-                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+                _mark_row(cells, RED_FILL, RED_FONT)
             elif values[header_index["人工确认状态"]] == "待处理":
                 _mark_cells(
-                    sheet[sheet.max_row],
+                    cells,
                     {header_index["人工确认状态"], header_index["异常状态"]},
                     YELLOW_FILL,
                     None,
@@ -252,7 +264,7 @@ class OvertimeReportWriter:
                 or "待审核" in str(values[header_index["统计状态"]])
             ):
                 _mark_cells(
-                    sheet[sheet.max_row],
+                    cells,
                     {header_index["异常状态"], header_index["统计状态"]},
                     AMBER_FILL,
                     AMBER_FONT,
@@ -275,9 +287,9 @@ class OvertimeReportWriter:
         ]
         sheet.append(headers)
         for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
-            sheet.append(_legacy_detail_row(result, self._config))
+            cells = _append_row(sheet, _legacy_detail_row(result, self._config))
             if _supplement_punch_issue(result, self._config) is not None:
-                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+                _mark_row(cells, RED_FILL, RED_FONT)
         _style_header(sheet)
         sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
@@ -302,9 +314,9 @@ class OvertimeReportWriter:
                 sum(item.late_minutes for item in items), sum(item.late_leave_exempt_minutes for item in items),
                 sum(item.late_grace_minutes for item in items), sum(item.late_chargeable_minutes for item in items),
             ]
-            sheet.append(row)
+            cells = _append_row(sheet, row)
             if supplement_count:
-                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+                _mark_row(cells, RED_FILL, RED_FONT)
         _style_header(sheet)
         sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
@@ -330,7 +342,7 @@ class OvertimeReportWriter:
             status = _summary_status(blocking, supplement, reviews)
             if status == "有效" and all_issues:
                 status = "有效（有待确认项）"
-            sheet.append([
+            cells = _append_row(sheet, [
                 work_date, status, len(all_issues), blocking, supplement, reviews,
                 sum(item.has_overtime for item in items), minutes, round(minutes / 60, 2),
                 sum(item.workday_overtime_minutes for item in items),
@@ -344,11 +356,11 @@ class OvertimeReportWriter:
                 sum(item.late_company_holiday_exempt_minutes for item in items),
             ])
             if supplement:
-                _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+                _mark_row(cells, RED_FILL, RED_FONT)
             elif reviews:
-                _mark_cells(sheet[sheet.max_row], {1, 4}, AMBER_FILL, AMBER_FONT)
+                _mark_cells(cells, {1, 4}, AMBER_FILL, AMBER_FONT)
             elif all_issues:
-                _mark_cells(sheet[sheet.max_row], {1, 2}, YELLOW_FILL, None)
+                _mark_cells(cells, {1, 2}, YELLOW_FILL, None)
         _style_header(sheet)
         sheet.auto_filter.ref = f"A1:{get_column_letter(sheet.max_column)}{sheet.max_row}"
 
@@ -360,12 +372,12 @@ class OvertimeReportWriter:
             if issue is None:
                 continue
             missing_type, reason = issue
-            sheet.append([
+            cells = _append_row(sheet, [
                 result.employee_name, result.user_id, result.work_date, result.shift, missing_type,
                 reason, result.approval_text,
                 f"请补齐 {result.work_date:%Y-%m-%d} 的{missing_type}；补卡后重新导出考勤并运行本工具。",
             ])
-            _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+            _mark_row(cells, RED_FILL, RED_FONT)
             notification_count += 1
         if notification_count == 0:
             sheet.append(["未发现待补卡记录"])
@@ -383,7 +395,7 @@ class OvertimeReportWriter:
         for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
             if not _needs_review(result):
                 continue
-            sheet.append([
+            cells = _append_row(sheet, [
                 result.employee_name, result.user_id, result.work_date, result.overtime_type,
                 _review_type(result), fmt_dt(result.first_clock_in), fmt_dt(result.last_clock_out),
                 result.overtime_minutes, result.leave_work_minutes, result.leave_overlap_minutes,
@@ -395,7 +407,7 @@ class OvertimeReportWriter:
                 ("当日非工作日加班" if result.overtime_type != "工作日" else "工作日加班不要求审批"),
                 result.company_holiday_overtime_minutes if result.overtime_type == "工作日" and result.company_holiday_overtime_minutes else result.overtime_minutes,
             ])
-            _mark_row(sheet[sheet.max_row], AMBER_FILL, AMBER_FONT)
+            _mark_row(cells, AMBER_FILL, AMBER_FONT)
             review_count += 1
         if review_count == 0:
             sheet.append(["未发现待审核记录"])
@@ -410,15 +422,15 @@ class OvertimeReportWriter:
         anomaly_count = 0
         for result in sorted(results, key=lambda item: (item.work_date, item.employee_name)):
             for anomaly_type, message in _anomalies_for(result, self._config):
-                sheet.append([
+                cells = _append_row(sheet, [
                     anomaly_type, result.employee_name, result.user_id, result.work_date, result.shift,
                     result.start_result, result.end_result, result.raw_punch_count, result.valid_raw_punch_count,
                     "是" if result.used_daily_fallback else "", result.approval_text, message,
                 ])
                 if "补卡" in anomaly_type or "缺卡" in anomaly_type:
-                    _mark_row(sheet[sheet.max_row], RED_FILL, RED_FONT)
+                    _mark_row(cells, RED_FILL, RED_FONT)
                 else:
-                    _mark_row(sheet[sheet.max_row], AMBER_FILL, AMBER_FONT)
+                    _mark_row(cells, AMBER_FILL, AMBER_FONT)
                 anomaly_count += 1
         if anomaly_count == 0:
             sheet.append(["未发现异常数据"])
@@ -431,12 +443,12 @@ class OvertimeReportWriter:
             "对统计的影响", "建议处理", "问题类型", "阻断自动汇总", "HR选择", "HR处理说明",
         ])
         for issue in input_issues:
-            sheet.append([
+            cells = _append_row(sheet, [
                 issue.source_sheet, issue.source_row, issue.employee_name, issue.user_id, issue.work_date,
                 issue.field_name, issue.raw_value, issue.message, issue.impact, issue.suggested_action,
                 issue.issue_type, "是" if issue.blocks_summary else "否", "", "",
             ])
-            _mark_row(sheet[sheet.max_row], YELLOW_FILL, None)
+            _mark_row(cells, YELLOW_FILL, None)
         if not input_issues:
             sheet.append(["未发现需要人工确认的输入数据"])
         else:
@@ -769,6 +781,13 @@ def _summary_status(input_issue_count: int, supplement_count: int, review_count:
     return "有效"
 
 
+def _append_row(sheet, values):
+    # 直接保留本行单元格供标色，避免 sheet[max_row] 再次扫描整张表。
+    cells = tuple(Cell(sheet, value=value) for value in values)
+    sheet.append(cells)
+    return cells
+
+
 def _style_header(sheet) -> None:
     header = sheet.cell(1, 1)
     header.fill = HEADER_FILL
@@ -802,30 +821,38 @@ def _mark_cells(row, indexes: set[int], fill: PatternFill, font: Font | None) ->
 
 
 def _finish_sheet(sheet) -> None:
+    max_row, max_column = sheet.max_row, sheet.max_column
+    headers = next(sheet.iter_rows(min_row=1, max_row=1, max_col=max_column))
+    number_formats = {
+        cell.column: "@" if cell.value == "UserId" else "yyyy-mm-dd"
+        for cell in headers if cell.value in {"UserId", "日期", "考勤日期"}
+    }
     sheet.sheet_view.showGridLines = False
     if sheet.title == "总览":
         sheet.freeze_panes = "D2"
     elif sheet.title in {"待人工确认", "配置"}:
         sheet.freeze_panes = "A2"
     else:
-        sheet.freeze_panes = "E2" if sheet.max_column > 25 else "A2"
+        sheet.freeze_panes = "E2" if max_column > 25 else "A2"
 
-    # 复用相同格式的完整样式，避免为每个单元格重复计算边框等对象的哈希。
-    # 每格仍复制一份，后续日期/文本格式修改不会影响其他单元格。
+    # 在复用最终样式前一并设置日期/文本格式，避免共享样式被后续修改。
     styles = {}
-    for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+    for row in sheet.iter_rows(min_row=2, max_row=max_row, max_col=max_column):
         for cell in row:
             wrap_text = isinstance(cell.value, str) and len(cell.value) > 24
-            key = (tuple(cell._style) if cell.has_style else None, wrap_text)
+            number_format = number_formats.get(cell.column)
+            key = (tuple(cell._style) if cell.has_style else None, wrap_text, number_format)
             if key not in styles:
                 cell.border = GRID_BORDER
                 if wrap_text:
                     cell.alignment = Alignment(vertical="top", wrap_text=True)
-                styles[key] = copy(cell._style)
+                if number_format:
+                    cell.number_format = number_format
+                styles[key] = cell._style
             else:
-                cell._style = copy(styles[key])
+                cell._style = styles[key]
 
-    header_by_col = {cell.column: str(cell.value) for cell in sheet[1]}
+    header_by_col = {cell.column: str(cell.value) for cell in headers}
     for column_cells in sheet.columns:
         column_letter = get_column_letter(column_cells[0].column)
         header = header_by_col.get(column_cells[0].column, "")
@@ -842,18 +869,10 @@ def _finish_sheet(sheet) -> None:
             width = min(max(max_length + 2, 10), 22)
         sheet.column_dimensions[column_letter].width = min(max(width, 10), 42)
 
-    for cell in sheet[1]:
-        if cell.value == "UserId":
-            for row in range(2, sheet.max_row + 1):
-                sheet.cell(row, cell.column).number_format = "@"
-        if cell.value in {"日期", "考勤日期"}:
-            for row in range(2, sheet.max_row + 1):
-                sheet.cell(row, cell.column).number_format = "yyyy-mm-dd"
-
     if sheet.title == "待人工确认":
         sheet.column_dimensions["M"].width = 24
         sheet.column_dimensions["N"].width = 32
-        for row in range(2, sheet.max_row + 1):
+        for row in range(2, max_row + 1):
             sheet.row_dimensions[row].height = 48
 
 

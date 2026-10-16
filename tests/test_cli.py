@@ -5,12 +5,26 @@ from dataclasses import replace
 import tempfile
 import unittest
 from unittest.mock import patch
+from zipfile import ZipFile
 
 from attendance_analyzer import cli
 from attendance_analyzer.config import AppConfig
 
 
 class CliTest(unittest.TestCase):
+    def test_incomplete_excel_archive_reports_an_input_error_without_traceback(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "损坏的考勤.xlsx", root / "结果.xlsx"
+            with ZipFile(source, "w"):
+                pass
+            with patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                code = cli._analyze_file(source, output, AppConfig())
+            self.assertEqual(code, 4)
+            self.assertIn("请从钉钉重新导出", stderr.getvalue())
+            self.assertNotIn("Traceback", stderr.getvalue())
+            self.assertFalse(output.exists())
+
     def test_batch_rejects_colliding_report_names_before_writing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

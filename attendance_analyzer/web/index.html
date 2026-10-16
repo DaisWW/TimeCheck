@@ -142,6 +142,71 @@
               <svg><use href="#i-refresh" /></svg>刷新列表
             </button>
           </div>
+          <section class="card run-card" id="run-card" aria-label="考勤统计">
+            <div class="run-top">
+              <div class="run-summary">
+                <div class="run-indicator" id="run-indicator">
+                  <svg><use href="#i-check" /></svg>
+                </div>
+                <div>
+                  <h2 id="run-title">准备就绪</h2>
+                  <p id="run-status" role="status">正在连接本机服务…</p>
+                </div>
+              </div>
+              <div class="run-actions">
+                <button class="btn" id="open-result" disabled hidden>
+                  <svg><use href="#i-external" /></svg><span>打开本次结果</span></button
+                ><button class="btn primary" id="start" disabled data-lock>
+                  <svg><use href="#i-play" /></svg><span>开始统计全部</span>
+                </button>
+              </div>
+            </div>
+            <ol class="run-stages" id="run-stages" aria-label="处理阶段" hidden>
+              <li><span>1</span>读取文件</li>
+              <li><span>2</span>核算考勤</li>
+              <li><span>3</span>生成报表</li>
+              <li><span>4</span>保存结果</li>
+            </ol>
+            <div class="progress-line">
+              <div
+                class="progress-track"
+                role="progressbar"
+                aria-label="文件完成进度"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="0"
+              >
+                <div id="progress-fill"></div>
+              </div>
+              <div class="progress-meta">
+                <span id="progress-count">等待添加文件</span>
+                <span id="run-elapsed" hidden></span>
+              </div>
+            </div>
+            <div class="run-bottom">
+              <span>统计原始考勤列表中的全部有效文件，无需勾选。</span
+              ><button
+                id="toggle-details"
+                class="text-button"
+                aria-expanded="false"
+              >
+                处理详情 <svg><use href="#i-chevron" /></svg>
+              </button>
+            </div>
+            <div class="details" id="details" hidden>
+              <div class="detail-toolbar">
+                <span>本次处理记录</span>
+                <div>
+                  <button class="text-button" id="open-log" disabled>
+                    打开日志</button
+                  ><button class="text-button" id="copy-log">
+                    <svg><use href="#i-copy" /></svg>复制详情
+                  </button>
+                </div>
+              </div>
+              <pre id="log" tabindex="0">本次处理记录会显示在这里。</pre>
+            </div>
+          </section>
           <div class="file-grid">
             <section
               class="card file-panel"
@@ -281,62 +346,6 @@
               </footer>
             </section>
           </div>
-          <section class="card run-card" id="run-card" aria-live="polite">
-            <div class="run-top">
-              <div class="run-summary">
-                <div class="run-indicator" id="run-indicator">
-                  <svg><use href="#i-check" /></svg>
-                </div>
-                <div>
-                  <h2 id="run-title">准备就绪</h2>
-                  <p id="run-status">正在连接本机服务…</p>
-                </div>
-              </div>
-              <div class="run-actions">
-                <button class="btn" id="open-result" disabled>
-                  <svg><use href="#i-external" /></svg>打开本次结果</button
-                ><button class="btn primary" id="start" disabled data-lock>
-                  <svg><use href="#i-play" /></svg><span>开始统计全部</span>
-                </button>
-              </div>
-            </div>
-            <div class="progress-line">
-              <div
-                class="progress-track"
-                role="progressbar"
-                aria-label="文件完成进度"
-                aria-valuemin="0"
-                aria-valuemax="100"
-                aria-valuenow="0"
-              >
-                <div id="progress-fill"></div>
-              </div>
-              <span id="progress-count">等待添加文件</span>
-            </div>
-            <div class="run-bottom">
-              <span>统计 input 中全部有效文件，列表勾选仅用于文件管理。</span
-              ><button
-                id="toggle-details"
-                class="text-button"
-                aria-expanded="false"
-              >
-                处理详情 <svg><use href="#i-chevron" /></svg>
-              </button>
-            </div>
-            <div class="details" id="details" hidden>
-              <div class="detail-toolbar">
-                <span>本次处理记录</span>
-                <div>
-                  <button class="text-button" id="open-log" disabled>
-                    打开日志</button
-                  ><button class="text-button" id="copy-log">
-                    <svg><use href="#i-copy" /></svg>复制详情
-                  </button>
-                </div>
-              </div>
-              <pre id="log" tabindex="0">本次处理记录会显示在这里。</pre>
-            </div>
-          </section>
           <div class="page-footer">
             <span
               ><svg><use href="#i-check" /></svg>规则与公司放假自动保留</span

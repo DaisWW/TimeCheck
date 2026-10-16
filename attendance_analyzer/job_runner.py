@@ -51,6 +51,7 @@ def run_job(input_path: Path, output_dir: Path, config_path: Path, log_dir: Path
                     code = cli.main(
                         [str(input_path), "-c", str(config_path)],
                         output_dir=output_dir, progress=progress,
+                        stage=lambda key, detail: events.put(("stage", key, detail)),
                     )
                 except Exception:
                     print("程序发生意外错误，请保留本次日志供排查。", file=sys.stderr)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -12,20 +13,27 @@ from .rules import OvertimeRule
 
 
 class AttendanceAnalyzer:
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, *, stage: Callable[[str, str], None] | None = None):
         self._config = config
+        self._stage = stage
         self._reader = DingTalkWorkbookReader(config)
         self._overtime_rule = OvertimeRule(config)
         self.last_input_issues: list[InputIssue] = []
 
     def analyze_overtime(self, input_path: Path) -> list[OvertimeResult]:
+        if self._stage:
+            self._stage("read", "正在读取和校验考勤文件")
         data = self._reader.read(input_path)
         results: list[OvertimeResult] = []
 
-        for day in data.daily_records:
+        if self._stage:
+            self._stage("calculate", f"正在计算 {len(data.daily_records)} 条考勤记录")
+        for index, day in enumerate(data.daily_records, 1):
             key = (person_key(day.user_id, day.employee_name), day.work_date)
             punches = data.raw_punches.get(key, [])
             results.append(self._overtime_rule.calculate(day, punches))
+            if self._stage and index % 100 == 0:
+                self._stage("calculate", f"已计算 {index} / {len(data.daily_records)} 条考勤记录")
 
         results, self.last_input_issues = self._resolve_input_issues(data, results)
         return self._allocate_monthly_late_grace(results)

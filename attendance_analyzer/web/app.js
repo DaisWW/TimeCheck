@@ -31,6 +31,7 @@ const state = {
   running: false,
   phase: "ready",
   runId: "",
+  reportId: "",
   cursor: 0,
   log: "",
   error: "",
@@ -124,13 +125,14 @@ function sizeText(bytes) {
 
 function syncControls() {
   const busy = state.busy || state.working || !state.connected;
+  const eligible = state.files.input.filter((item) => item.eligible).length;
   document
     .querySelectorAll("[data-lock]")
     .forEach((control) => (control.disabled = busy));
   $("start").disabled =
     busy ||
     !!state.files.config_error ||
-    !state.files.input.some((item) => item.eligible);
+    !eligible;
   for (const kind of ["input", "output"]) {
     const selected = state.selected[kind].size;
     $("remove-" + kind).disabled = busy || !selected;
@@ -155,9 +157,18 @@ function syncControls() {
   $("file-picker").disabled = busy;
   $("start").querySelector("span").textContent = state.running
     ? "正在统计…"
-    : state.phase === "ready"
-      ? "开始统计全部"
-      : "再次统计全部";
+    : eligible
+      ? `${state.phase === "ready" ? "开始统计" : "重新统计"} ${eligible} 份`
+      : "先添加考勤文件";
+  if (state.phase === "ready" && state.connected && !state.working) {
+    $("run-title").textContent = eligible ? "准备就绪" : "添加考勤，开始统计";
+    $("run-status").textContent = state.files.config_error
+      ? "请先修正规则配置，再开始统计。"
+      : eligible
+        ? `已准备好 ${eligible} 份考勤，点击开始即可生成报表。`
+        : "选择文件、拖入文件，或在此页面按 Ctrl+V 粘贴。";
+    $("progress-count").textContent = eligible ? `${eligible} 份待统计` : "等待添加文件";
+  }
   $("exit").disabled = state.running || state.working;
   $("show-dashboard").disabled = state.working || !state.connected;
   if (state.editor) {
@@ -504,7 +515,8 @@ async function updateStatus() {
     make("i"),
     document.createTextNode("本机服务已连接"),
   );
-  if (result.run_id !== state.runId) {
+  const newRun = result.run_id !== state.runId;
+  if (newRun) {
     state.log = "";
     state.runId = result.run_id;
   }
@@ -517,11 +529,12 @@ async function updateStatus() {
     if (atEnd) log.scrollTop = log.scrollHeight;
   }
   const finished =
-    result.phase !== state.phase && ["success", "error"].includes(result.phase);
+    (newRun || result.phase !== state.phase) && ["success", "error"].includes(result.phase);
   state.busy = result.busy;
   state.running = result.running;
   state.phase = result.phase;
-  if (!state.working) {
+  state.reportId = result.report_id;
+  if (!state.working || newRun || result.running) {
     $("run-card").className = "card run-card " + result.phase;
     $("run-title").textContent = {
       ready: "准备就绪",
@@ -529,17 +542,42 @@ async function updateStatus() {
       success: "统计完成",
       error: "统计未完成",
     }[result.phase];
-    $("run-status").textContent = result.status;
+    $("run-status").textContent = result.running
+      ? result.detail || result.status
+      : result.status;
     const percent = result.total ? (result.completed * 100) / result.total : 0;
     $("progress-fill").style.width = `${percent}%`;
-    document
-      .querySelector(".progress-track")
-      .setAttribute("aria-valuenow", String(Math.round(percent)));
+    const track = document.querySelector(".progress-track");
+    const indeterminate = result.running && result.total === 1;
+    track.classList.toggle("indeterminate", indeterminate);
+    if (indeterminate) track.removeAttribute("aria-valuenow");
+    else track.setAttribute("aria-valuenow", String(Math.round(percent)));
+    track.setAttribute("aria-valuetext", result.running ? result.detail || result.status : result.status);
     $("progress-count").textContent = result.total
       ? `已完成 ${result.completed} / ${result.total} 份`
-      : "等待添加文件";
+      : result.phase === "ready" ? "等待添加文件" : "本次尚未处理文件";
+    $("run-elapsed").hidden = result.phase === "ready";
+    const seconds = Math.max(0, result.elapsed_seconds);
+    const duration = seconds < 60
+      ? `${seconds.toFixed(1)} 秒`
+      : `${Math.floor(seconds / 60)} 分 ${Math.floor(seconds % 60)} 秒`;
+    $("run-elapsed").textContent = `${result.running ? "已用时" : "总用时"} ${duration}`;
+    $("run-stages").hidden = result.phase === "ready";
+    const stages = ["read", "calculate", "report", "save"];
+    const current = stages.indexOf(result.stage);
+    $("run-stages").querySelectorAll("li").forEach((step, index) => {
+      step.classList.toggle("done", result.phase === "success" || index < current);
+      step.classList.toggle("active", result.running && index === current);
+      step.classList.toggle("failed", result.phase === "error" && index === current);
+      if (result.running && index === current) step.setAttribute("aria-current", "step");
+      else step.removeAttribute("aria-current");
+    });
   }
   $("open-result").disabled = !result.result || result.running;
+  $("open-result").hidden = !result.result || result.running;
+  $("open-result").querySelector("span").textContent = state.reportId ? "打开报表" : "打开本次结果";
+  $("open-result").classList.toggle("primary", result.phase === "success");
+  $("start").classList.toggle("primary", result.phase !== "success" || !result.result);
   $("open-log").disabled = !result.log_available;
   if (result.refresh || finished) {
     await refreshFiles(true);
@@ -1154,7 +1192,9 @@ $("copy-log").onclick = () => copyText(state.log);
 $("toggle-details").onclick = () => detailsVisible($("details").hidden);
 $("open-log").onclick = () => perform(() => api("open_path", { kind: "log" }));
 $("open-result").onclick = () =>
-  perform(() => api("open_path", { kind: "result" }));
+  perform(() => api("open_path", state.reportId
+    ? { kind: "output", identifier: state.reportId }
+    : { kind: "result" }));
 $("open-selected").onclick = () =>
   perform(() =>
     api("open_path", {

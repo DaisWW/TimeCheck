@@ -42,7 +42,10 @@ class DingTalkWorkbookReader:
 
     def read(self, path: Path) -> AttendanceData:
         # 不使用公式缓存，避免公式或未缓存的结果被当作空白输入。
-        workbook = load_workbook(path, data_only=False, read_only=False)
+        try:
+            workbook = load_workbook(path, data_only=False, read_only=False)
+        except KeyError as error:
+            raise ValueError(f"{path}：不是完整的 Excel 工作簿，请从钉钉重新导出原始考勤后重试。") from error
         try:
             for name in (self._config.sheets.daily_sheet, self._config.sheets.raw_sheet):
                 if name not in workbook.sheetnames:
