@@ -852,11 +852,9 @@ def _finish_sheet(sheet) -> None:
             else:
                 cell._style = styles[key]
 
-    header_by_col = {cell.column: str(cell.value) for cell in headers}
-    for column_cells in sheet.columns:
-        column_letter = get_column_letter(column_cells[0].column)
-        header = header_by_col.get(column_cells[0].column, "")
-        max_length = max((len(str(cell.value)) for cell in column_cells if cell.value is not None), default=8)
+    for header_cell in headers:
+        column_letter = get_column_letter(header_cell.column)
+        header = str(header_cell.value)
         if header in {"关联审批单", "加班计算说明", "计算说明", "备注", "问题", "对统计的影响", "建议处理", "审核原因", "HR处理说明"}:
             width = 34
         elif "状态" in header or header in {"统计期间", "异常状态", "请假类型", "漏卡", "人工确认状态"}:
@@ -866,6 +864,10 @@ def _finish_sheet(sheet) -> None:
         elif "分钟" in header or "次数" in header or "天数" in header or "记录数" in header:
             width = 14
         else:
+            column_cells = next(sheet.iter_cols(
+                min_col=header_cell.column, max_col=header_cell.column, max_row=max_row,
+            ))
+            max_length = max((len(str(cell.value)) for cell in column_cells if cell.value is not None), default=8)
             width = min(max(max_length + 2, 10), 22)
         sheet.column_dimensions[column_letter].width = min(max(width, 10), 42)
 

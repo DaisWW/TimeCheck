@@ -20,6 +20,7 @@ RUNTIME_FILES = (
     "python.exe", "pythonw.exe", "python313.dll", "python313.zip", "python313._pth",
     "vcruntime140.dll", "vcruntime140_1.dll", "LICENSE.txt",
     "Lib/site-packages/openpyxl/__init__.py", "Lib/site-packages/send2trash/__init__.py",
+    "Lib/site-packages/lxml/__init__.py",
     "Lib/site-packages/pywin32_system32/pythoncom313.dll",
     "Lib/site-packages/pywin32_system32/pywintypes313.dll",
 )
@@ -85,13 +86,14 @@ assert sys.flags.isolated and site.ENABLE_USER_SITE is False
 root = pathlib.Path(sys.executable).resolve().parent.parent
 assert all(pathlib.Path(p).resolve().is_relative_to(root) for p in sys.path)
 import openpyxl, pythoncom, pywintypes
+assert openpyxl.LXML, 'Excel 快速写出组件未加载'
 from win32com.shell import shell
 from send2trash import send2trash
 pythoncom.CoInitialize()
 pythoncom.CoUninitialize()
 sys.path.insert(0, sys.argv[1])
 import attendance_analyzer.gui, attendance_analyzer.cli
-print('包内 Python、Excel、COM 和回收站依赖验证通过。')
+print('包内 Python、Excel 加速、COM 和回收站依赖验证通过。')
 """, str(source_dir),
     ], cwd=runtime_dir.parent, env=environment, check=True)
 

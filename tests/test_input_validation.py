@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.utils.datetime import CALENDAR_MAC_1904, CALENDAR_WINDOWS_1900
 
 from attendance_analyzer.analyzer import AttendanceAnalyzer
 from attendance_analyzer.config import AppConfig
@@ -51,6 +52,58 @@ class InputValidationTest(unittest.TestCase):
         self.assertEqual(len(data.daily_records), 1)
         self.assertEqual(len(data.raw_punches[("u1", date(2026, 8, 3))]), 2)
         self.assertEqual(data.input_issues, [])
+
+    def test_merged_two_level_headers_preserve_field_names(self):
+        workbook = valid_workbook()
+        daily = workbook["每日统计"]
+        for column in (1, 2, 3, 4, 9):
+            daily.merge_cells(start_row=3, start_column=column, end_row=4, end_column=column)
+        for column, label in ((5, "上班1"), (7, "下班1")):
+            daily.cell(4, column, daily.cell(3, column).value)
+            daily.cell(4, column + 1, daily.cell(3, column + 1).value)
+            daily.cell(3, column).value = label
+            daily.merge_cells(start_row=3, start_column=column, end_row=3, end_column=column + 1)
+        data = self.read(workbook)
+        self.assertEqual(len(data.daily_records), 1)
+        self.assertEqual(data.daily_records[0].start_time_text, "09:30")
+        self.assertEqual(data.daily_records[0].end_time_text, "20:00")
+        self.assertEqual(data.input_issues, [])
+
+    def test_required_header_merged_across_columns_is_still_duplicate(self):
+        workbook = valid_workbook()
+        workbook["每日统计"].merge_cells("A3:B3")
+        with self.assertRaises(WorkbookInputError) as raised:
+            self.read(workbook)
+        issue = next(issue for issue in raised.exception.issues if issue.field_name == "姓名")
+        self.assertEqual(issue.raw_value, "[1, 2]")
+
+    def test_excel_dates_and_times_preserve_1900_and_1904_date_systems(self):
+        for epoch in (CALENDAR_WINDOWS_1900, CALENDAR_MAC_1904):
+            with self.subTest(epoch=epoch):
+                workbook = valid_workbook()
+                workbook.epoch = epoch
+                workbook["每日统计"]["C5"] = date(2026, 8, 3)
+                raw = workbook["原始记录"]
+                for row, hour, minute in ((4, 9, 30), (5, 20, 0)):
+                    raw.cell(row, 3).value = date(2026, 8, 3)
+                    raw.cell(row, 4).value = datetime(2026, 8, 3, hour, minute)
+                data = self.read(workbook)
+                self.assertEqual(data.daily_records[0].work_date, date(2026, 8, 3))
+                self.assertEqual(
+                    [p.occurred_at for p in data.raw_punches[("u1", date(2026, 8, 3))]],
+                    [datetime(2026, 8, 3, 9, 30), datetime(2026, 8, 3, 20)],
+                )
+                self.assertEqual(data.input_issues, [])
+
+    def test_excel_error_values_remain_blocking_in_both_sheets(self):
+        workbook = valid_workbook()
+        workbook["每日统计"]["E5"] = "#VALUE!"
+        workbook["原始记录"]["D4"] = "#REF!"
+        with self.assertRaises(WorkbookInputError) as raised:
+            self.read(workbook)
+        errors = [issue for issue in raised.exception.issues if "Excel 错误值" in issue.message]
+        self.assertEqual({issue.source_sheet for issue in errors}, {"每日统计", "原始记录"})
+        self.assertTrue(all(issue.blocks_summary for issue in errors))
 
     def test_all_bad_cells_are_reported_with_source_and_original_value(self):
         workbook = valid_workbook()

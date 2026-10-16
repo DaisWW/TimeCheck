@@ -6,6 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from openpyxl import load_workbook
+from openpyxl.cell.cell import MergedCell
+from openpyxl.worksheet._reader import WorksheetReader
+from openpyxl.worksheet.cell_range import CellRange, MultiCellRange
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .approval import LEAVE_KEYWORDS, approval_parse_issues
@@ -42,16 +45,14 @@ class DingTalkWorkbookReader:
 
     def read(self, path: Path) -> AttendanceData:
         # 不使用公式缓存，避免公式或未缓存的结果被当作空白输入。
+        workbook = None
         try:
-            workbook = load_workbook(path, data_only=False, read_only=False)
-        except KeyError as error:
-            raise ValueError(f"{path}：不是完整的 Excel 工作簿，请从钉钉重新导出原始考勤后重试。") from error
-        try:
+            workbook = load_workbook(path, data_only=False, read_only=True)
             for name in (self._config.sheets.daily_sheet, self._config.sheets.raw_sheet):
                 if name not in workbook.sheetnames:
                     raise ValueError(f"{path}：缺少工作表 {name!r}；实际工作表：{workbook.sheetnames}")
-            daily_sheet = workbook[self._config.sheets.daily_sheet]
-            raw_sheet = workbook[self._config.sheets.raw_sheet]
+            daily_sheet = _read_data_sheet(workbook, self._config.sheets.daily_sheet)
+            raw_sheet = _read_data_sheet(workbook, self._config.sheets.raw_sheet)
             input_issues: list[InputIssue] = []
             _validate_headers(daily_sheet, (3, 4), DAILY_FIELDS, input_issues)
             _validate_headers(raw_sheet, (3,), RAW_FIELDS, input_issues)
@@ -66,8 +67,11 @@ class DingTalkWorkbookReader:
             if not daily_records:
                 raise ValueError(f"{path}：每日统计没有考勤数据，不能生成空统计结果。")
             return AttendanceData(daily_records, raw_punches, input_issues)
+        except KeyError as error:
+            raise ValueError(f"{path}：不是完整的 Excel 工作簿，请从钉钉重新导出原始考勤后重试。") from error
         finally:
-            workbook.close()
+            if workbook is not None:
+                workbook.close()
 
     def _read_daily_records(
         self, sheet: Worksheet, input_issues: list[InputIssue] | None = None
@@ -385,10 +389,37 @@ class DingTalkWorkbookReader:
                     ))
 
 
+def _read_data_sheet(workbook, name: str) -> Worksheet:
+    # 沿用 openpyxl 的值/日期/公式解析，只绑定所需表的数据，省去输入表的版式处理。
+    source = workbook[name]
+    if isinstance(source, Worksheet):
+        return source
+    sheet = Worksheet(workbook)
+    workbook._sheets[workbook._sheets.index(source)] = sheet
+    sheet.title = name
+    with source._get_source() as xml:
+        reader = WorksheetReader(sheet, xml, source._shared_strings, False, False)
+        reader.bind_cells()
+    if reader.parser.merged_cells:
+        ranges = [CellRange(item.ref) for item in reader.parser.merged_cells.mergeCell]
+        for merged in ranges:
+            sheet.cell(merged.min_row, merged.min_col)
+            cells = merged.cells
+            next(cells)  # 合并区域仅保留左上角的值，不重建边框和保护样式。
+            for row, column in cells:
+                sheet._cells[row, column] = MergedCell(sheet, row, column)
+        sheet.merged_cells = MultiCellRange(ranges)
+    return sheet
+
+
 def _validate_headers(sheet, header_rows, required, issues):
-    for field in required:
-        columns = [column for column in range(1, sheet.max_column + 1)
-                   if any(str(_merged_value(sheet, row, column) or "").strip() == field for row in header_rows)]
+    columns_by_field = {field: [] for field in required}
+    for column in range(1, sheet.max_column + 1):
+        fields = {str(_merged_value(sheet, row, column) or "").strip() for row in header_rows}
+        for field in fields:
+            if field in columns_by_field:
+                columns_by_field[field].append(column)
+    for field, columns in columns_by_field.items():
         if len(columns) != 1:
             issues.append(_input_issue(
                 sheet, header_rows[0], "", "", None, field, str(columns),

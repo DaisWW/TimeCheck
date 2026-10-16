@@ -79,7 +79,8 @@ class PackagingTest(unittest.TestCase):
                 self.assertEqual(destination.read_bytes(), b"previous release")
 
     def test_incomplete_runtime_preserves_previous_zip_and_removes_staging(self):
-        for filename in ("pythonw.exe", "Lib/site-packages/pywin32_system32/pywintypes313.dll"):
+        for filename in ("pythonw.exe", "Lib/site-packages/pywin32_system32/pywintypes313.dll",
+                         "Lib/site-packages/lxml/__init__.py"):
             with self.subTest(filename=filename), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 make_source(root)
