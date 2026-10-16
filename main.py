@@ -13,7 +13,9 @@ def main(argv=None):
     except Exception as error:
         base = Path(__file__).resolve().parent
         detail = traceback.format_exc()
-        message = f"考勤工作台启动失败：{error}\n请检查 Python 依赖、目录写入权限和默认浏览器。"
+        message = (f"考勤工作台启动失败：{error}\n"
+                   "请确认已完整解压到可写目录，并已设置默认浏览器。"
+                   "若仍无法启动，请将下方日志交给维护人员。")
         try:
             logs = base / "logs"
             logs.mkdir(parents=True, exist_ok=True)

@@ -27,13 +27,15 @@
 
 工作台使用 Python 在本机运行，双击 `启动考勤工作台.vbs` 自动打开默认浏览器。网页固定使用软件同目录的 `input`、`output` 和一份 `config.json`。HR 可多选或拖入原始 `.xlsx` / `.xlsm` 文件，复制到 `input` 后统一统计；输入和结果都有列表，支持打开、多选清理和清空到回收站。支持网页内规则与放假编辑、处理进度和错误日志。建议使用新版 Edge / Chrome。详细步骤见 [HR 使用说明](docs/HR使用说明.txt)，交互及错误处理设计见 [HR 交互方案](docs/hr_interaction.md)。
 
-每台 Windows 电脑首次使用时，安装 Python 3.11 或以上版本并加入 PATH，再在软件目录运行以下命令安装依赖：
+**HR 使用发布包：适用于 Windows 10/11 64 位。右键 ZIP“全部解压缩”到桌面等可写目录，再双击 `启动考勤工作台.vbs`，即可在浏览器导入文件并统计。无需安装 Python、依赖或输入命令，首次使用也不需要联网。**
+
+开发者直接运行源码时，需要 Python 3.11+，在项目目录安装依赖：
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-之后双击软件目录的 **`启动考勤工作台.vbs`**，使用 `pythonw` 隐藏启动；配置、统计、进度和错误详情都在网页中操作。启动失败时显示系统错误弹窗并保存日志。调试也可运行 `python main.py`。
+发布包固定使用 `runtime/pythonw.exe` 隐藏启动，配置、统计、进度和错误详情都在网页中操作。完整移动软件目录即可保留配置和数据，不能只复制启动文件。启动失败时显示系统错误弹窗并保存日志。源码调试可运行 `python main.py`。
 
 **`启动考勤工作台.vbs` 打开浏览器，`一键统计考勤.bat` 直接统计，`build_release.bat` 发布新版本。** 日常统计无需重新打包。
 
@@ -45,7 +47,7 @@ python -m pip install -r requirements.txt
 
 ## 无界面统计（AI / 自动化）
 
-源码环境安装依赖后，将考勤文件放入项目根目录的 `input`，直接运行 **`一键统计考勤.bat`**，无需输入任何参数：
+将考勤文件放入软件根目录的 `input`，直接运行 **`一键统计考勤.bat`**，无需输入任何参数。发布包使用包内 Python；源码环境需先安装依赖：
 
 ```powershell
 .\一键统计考勤.bat
@@ -109,7 +111,8 @@ $LASTEXITCODE
 - `input/`：待分析的钉钉 Excel；实际考勤文件只保存在本地，不提交到 Git。
 - `output/`：分析结果；历史结果可放在 `output/archive/`，也不提交到 Git。
 - `main.py`：本机网页工作台的顶层入口。
-- `启动考勤工作台.vbs`：无黑框启动入口，需要 Python 和项目依赖。
+- `启动考勤工作台.vbs`：无黑框启动入口，发布包使用内置运行环境。
+- `runtime/`：仅在发布包中提供的便携 Python 和依赖，不依赖系统 Python。
 - `一键统计考勤.bat`：AI / 自动化使用的无界面统计入口，无暂停，返回处理退出码。
 - `build_release.bat`：开发机的一键打包入口，输出 ZIP。
 - `config.json`：当前使用的全部考勤规则和公司放假安排；`config.example.json`：完整默认模板。
@@ -143,9 +146,11 @@ $LASTEXITCODE
 - `待人工确认`：记录明确被规则排除的无效卡、补卡审批等业务提示。解析失败的输入会直接报错并停止该文件统计，修正后重跑；不会仅留提示就继续计算。
 - `配置`：记录本次分析使用的关键规则。
 
-## 打包源码 ZIP
+## 打包 Windows 免安装 ZIP
 
-双击 **`build_release.bat`** 安装运行依赖、校验正式 JSON、运行测试，再生成 `build/dingding-attendance.zip`。ZIP 包含 Python 代码和网页资源；接收电脑需要 Python 3.11+ 和 `requirements.txt` 中的依赖，安装完成后可离线统计。查看报表可使用 Excel/WPS，编辑规则使用网页设置页面。
+开发机使用 Windows 64 位及 Python 3.11+。双击 **`build_release.bat`** 安装开发环境依赖、校验正式 JSON、运行测试，再自动准备便携运行环境，生成 `build/dingding-attendance.zip`。只有构建机需要联网；HR 电脑完整解压即可离线使用。查看报表可使用 Excel/WPS，编辑规则使用网页设置页面。
+
+运行环境采用官方 CPython 3.13.16 Windows x64 嵌入版，固定官方下载地址和 SHA-256，每次使用下载缓存前也重新校验；依赖按 Python 3.13 / Windows x64 安装到包内，不复制开发机的 site-packages。构建时清除系统 Python 路径，实际验证 Excel、COM、回收站组件和应用模块可加载。Python 和依赖自带的许可证一同保留。没有恢复旧的桌面 EXE 打包方式。
 
 已完成验证时，也可单独生成 ZIP：
 
@@ -153,7 +158,7 @@ $LASTEXITCODE
 python scripts/package_release.py
 ```
 
-直接从源码生成 ZIP，不创建中间发布目录；整个 `build/` 已被 Git 忽略。打包失败返回非零退出码，保留之前的 ZIP；不要把旧文件当成本次新版本。
+下载缓存和临时运行环境均位于已被 Git 忽略的 `build/`；临时目录在结束后清理。全部验证及 ZIP CRC 校验成功后才替换最终 ZIP。下载损坏、依赖安装或打包失败返回非零退出码，保留之前的 ZIP；不要把旧文件当成本次新版本。
 
 ZIP 解压后的结构如下，模板集中在独立目录，不自动读取：
 
@@ -163,6 +168,15 @@ dingding-attendance\
   一键统计考勤.bat
   main.py
   requirements.txt
+  runtime\
+    pythonw.exe
+    python.exe
+    python313.dll
+    python313.zip
+    python313._pth
+    LICENSE.txt
+    Lib\site-packages\
+    ...
   attendance_analyzer\
     *.py
     web\
@@ -180,7 +194,7 @@ dingding-attendance\
 
 ZIP 使用明确文件清单生成，`input`、`output`、`logs` 在 ZIP 内始终为空，不会带入开发机上的实际考勤、报表和日志；当前正式 JSON 中的规则和公司假安排会随包分发。
 
-将 ZIP 发给 HR，右键“全部解压缩”到桌面等可写目录，首次安装 Python 和依赖后双击 `启动考勤工作台.vbs`。不要在压缩包里直接运行。
+将 ZIP 发给 HR，右键“全部解压缩”到桌面等可写目录，再双击 `启动考勤工作台.vbs`。不要在压缩包里直接运行，也不要删除或单独移动 `runtime`。发布包缺少运行环境时会提示重新完整解压，不会临时联网安装或改用系统 Python。
 
 1. 在网页中点击“选择文件”多选，或把钉钉导出的原始文件拖入“原始考勤”区域。程序复制到软件同目录的 `input`，保留原始位置文件；遇同名文件可替换、跳过或取消。同一批不同目录中的同名文件需先重命名。
 2. 点击“开始统计全部”，处理 `input` 第一层的全部有效 `.xlsx` / `.xlsm`；列表选择只用于打开或清理，不限制本次统计范围。子目录、临时文件及已有分析报表不参与统计。
