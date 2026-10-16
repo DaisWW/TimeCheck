@@ -12,13 +12,16 @@ def create_release_zip(source_dir: Path) -> Path:
         "启动考勤工作台.vbs": "启动考勤工作台.vbs",
         "一键统计考勤.bat": "一键统计考勤.bat",
         "requirements.txt": "requirements.txt",
-        "attendance_analyzer/__init__.py": "attendance_analyzer/__init__.py",
         "config.json": "config.json",
         "config.example.json": "配置模板/config.json",
         "docs/HR使用说明.txt": "使用说明.txt",
     }
-    for path in sorted((source_dir / "attendance_analyzer").glob("*.py")):
-        relative = path.relative_to(source_dir).as_posix()
+    for name in (
+        "__init__", "analyzer", "approval", "cli", "company_calendar", "config",
+        "config_forms", "excel_reader", "file_manager", "gui", "job_runner",
+        "models", "report_writer", "rules", "time_utils", "web_api",
+    ):
+        relative = f"attendance_analyzer/{name}.py"
         files[relative] = relative
     for name in ("index.html", "app.css", "app.js"):
         relative = f"attendance_analyzer/web/{name}"
