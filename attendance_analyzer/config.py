@@ -5,7 +5,6 @@ from datetime import date, time
 import json
 from pathlib import Path
 import re
-import sys
 import tempfile
 
 from .company_calendar import CompanyHoliday, parse_company_holidays
@@ -297,5 +296,5 @@ def parse_rule_text(value: str, default, key: str):
 def find_default_config(explicit_path: str | None) -> Path | None:
     if explicit_path:
         return Path(explicit_path)
-    candidates = [Path.cwd() / "config.json", Path(sys.executable).resolve().parent / "config.json"]
-    return next((path for path in candidates if path.exists()), None)
+    path = Path.cwd() / "config.json"
+    return path if path.exists() else None

@@ -20,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="?",
         help="钉钉考勤 Excel 或输入目录。未指定时批量分析 ./input。",
     )
-    parser.add_argument("-c", "--config", help="JSON 配置文件路径。未指定时读取当前目录或 EXE 所在目录的 config.json。")
+    parser.add_argument("-c", "--config", help="JSON 配置文件路径。未指定时读取当前目录的 config.json。")
     parser.add_argument(
         "-o",
         "--output",
@@ -66,9 +66,9 @@ def main(
             return code
         input_dir = input_path
     else:
-        input_dir = _base_dir() / "input"
+        input_dir = Path.cwd().resolve() / "input"
 
-    output_dir = Path(args.output).expanduser().resolve() if args.output else (output_dir or _base_dir() / "output")
+    output_dir = Path(args.output).expanduser().resolve() if args.output else (output_dir or Path.cwd().resolve() / "output")
     return _analyze_directory(input_dir, output_dir, config, progress=progress)
 
 
@@ -172,13 +172,7 @@ def _analyze_file(
 
 
 def _default_output_path(input_path: Path, config: AppConfig) -> Path:
-    return _base_dir() / "output" / f"{input_path.stem}{config.report.output_suffix}"
-
-
-def _base_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path.cwd().resolve()
+    return Path.cwd().resolve() / "output" / f"{input_path.stem}{config.report.output_suffix}"
 
 
 def _find_input_files(input_dir: Path, config: AppConfig) -> list[Path]:

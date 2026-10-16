@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import secrets
-import sys
 import threading
 import time
 from urllib.error import URLError
@@ -209,8 +208,7 @@ def launch(base_dir):
 
 def main(argv=None):
     argparse.ArgumentParser(description='打开本机考勤网页工作台。').parse_args(argv)
-    base = Path(sys.executable).resolve().parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parents[1]
-    return launch(base)
+    return launch(Path(__file__).resolve().parents[1])
 
 
 if __name__ == '__main__':

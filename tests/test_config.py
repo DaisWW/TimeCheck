@@ -126,7 +126,7 @@ class ConfigTest(unittest.TestCase):
                 replace(original, workday=replace(original.workday, work_minutes=-1)).save(path)
             self.assertEqual(path.read_bytes(), before)
 
-    def test_default_lookup_reads_only_json_and_keeps_directory_priority(self):
+    def test_default_lookup_reads_only_current_json_and_ignores_interpreter_directory(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             current, executable = root / "current", root / "app"
@@ -138,11 +138,10 @@ class ConfigTest(unittest.TestCase):
                     (parent / name).touch()
             for path in paths:
                 path.touch()
-            with patch("attendance_analyzer.config.Path.cwd", return_value=current), patch.object(sys, "executable", str(executable / "tool.exe")):
+            with patch("attendance_analyzer.config.Path.cwd", return_value=current), patch.object(sys, "executable", str(executable / "python.exe")):
                 self.assertEqual(find_default_config("custom.json"), Path("custom.json"))
-                for path in paths:
-                    self.assertEqual(find_default_config(None), path)
-                    path.unlink()
+                self.assertEqual(find_default_config(None), paths[0])
+                paths[0].unlink()
                 self.assertIsNone(find_default_config(None))
 
 

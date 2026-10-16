@@ -25,15 +25,15 @@
 
 ## 运行
 
-给 HR 使用时，发送一键打包得到的 ZIP，完整解压后双击 `dingding-attendance.exe`，自动打开默认浏览器，无需安装 Python、WebView2 或 Office。网页固定使用软件同目录的 `input`、`output` 和一份 `config.json`。HR 可多选或拖入原始 `.xlsx` / `.xlsm` 文件，复制到 `input` 后统一统计；输入和结果都有列表，支持打开、多选清理和清空到回收站。支持网页内规则与放假编辑、处理进度和错误日志。建议使用新版 Edge / Chrome。详细步骤见 [HR 使用说明](docs/HR使用说明.txt)，交互及错误处理设计见 [HR 交互方案](docs/hr_interaction.md)。
+工作台使用 Python 在本机运行，双击 `启动考勤工作台.vbs` 自动打开默认浏览器。网页固定使用软件同目录的 `input`、`output` 和一份 `config.json`。HR 可多选或拖入原始 `.xlsx` / `.xlsm` 文件，复制到 `input` 后统一统计；输入和结果都有列表，支持打开、多选清理和清空到回收站。支持网页内规则与放假编辑、处理进度和错误日志。建议使用新版 Edge / Chrome。详细步骤见 [HR 使用说明](docs/HR使用说明.txt)，交互及错误处理设计见 [HR 交互方案](docs/hr_interaction.md)。
 
-不打包时，在 Windows 电脑安装 Python 3.11 或以上版本并加入 PATH，首次运行以下命令安装依赖：
+每台 Windows 电脑首次使用时，安装 Python 3.11 或以上版本并加入 PATH，再在软件目录运行以下命令安装依赖：
 
 ```powershell
 python -m pip install -r requirements.txt
 ```
 
-之后双击项目根目录的 **`启动考勤工作台.vbs`**，使用 `pythonw` 隐藏启动，打开与 EXE 相同的网页；配置、统计、进度和错误详情都在网页中操作。启动失败时显示系统错误弹窗并保存日志。原 `启动考勤客户端.bat` 转到同一入口；若希望完全没有控制台闪现，请直接使用 VBS 或发布版 EXE。源码调试也可运行 `python main.py`。
+之后双击软件目录的 **`启动考勤工作台.vbs`**，使用 `pythonw` 隐藏启动；配置、统计、进度和错误详情都在网页中操作。启动失败时显示系统错误弹窗并保存日志。调试也可运行 `python main.py`。
 
 **`启动考勤工作台.vbs` 打开浏览器，`一键统计考勤.bat` 直接统计，`build_release.bat` 发布新版本。** 日常统计无需重新打包。
 
@@ -108,14 +108,13 @@ $LASTEXITCODE
 - `scripts/`：打包脚本。
 - `input/`：待分析的钉钉 Excel；实际考勤文件只保存在本地，不提交到 Git。
 - `output/`：分析结果；历史结果可放在 `output/archive/`，也不提交到 Git。
-- `main.py`：本机网页工作台和 EXE 的顶层入口。
-- `启动考勤工作台.vbs`：源码无黑框启动入口，需要 Python 和项目依赖。
-- `启动考勤客户端.bat`：兼容启动入口，转到 VBS。
+- `main.py`：本机网页工作台的顶层入口。
+- `启动考勤工作台.vbs`：无黑框启动入口，需要 Python 和项目依赖。
 - `一键统计考勤.bat`：AI / 自动化使用的无界面统计入口，无暂停，返回处理退出码。
 - `build_release.bat`：开发机的一键打包入口，输出 ZIP。
 - `config.json`：当前使用的全部考勤规则和公司放假安排；`config.example.json`：完整默认模板。
 
-源码和 EXE 都固定读取各自软件目录的 `input/output/config.json`，不读取旧路径记录，不需要选择或记忆目录。
+网页固定读取软件目录的 `input/output/config.json`，不读取旧路径记录，不需要选择或记忆目录。
 
 ## 设计
 
@@ -144,23 +143,32 @@ $LASTEXITCODE
 - `待人工确认`：记录明确被规则排除的无效卡、补卡审批等业务提示。解析失败的输入会直接报错并停止该文件统计，修正后重跑；不会仅留提示就继续计算。
 - `配置`：记录本次分析使用的关键规则。
 
-## 打包 EXE
+## 打包源码 ZIP
 
-在 Windows 64 位开发机安装 Python 3.11 或以上版本并加入 PATH，双击 **`build_release.bat`** 即可一键打包。首次打包需联网安装依赖。HR 机器无需安装 Python，也无需联网统计；查看报表可使用 Excel/WPS，编辑规则使用网页弹窗。
+双击 **`build_release.bat`** 安装运行依赖、校验正式 JSON、运行测试，再生成 `build/dingding-attendance.zip`。ZIP 包含 Python 代码和网页资源；接收电脑需要 Python 3.11+ 和 `requirements.txt` 中的依赖，安装完成后可离线统计。查看报表可使用 Excel/WPS，编辑规则使用网页弹窗。
 
-也可在命令行执行：
+已完成验证时，也可单独生成 ZIP：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
+python scripts/package_release.py
 ```
 
-脚本会安装依赖、校验 JSON、运行测试、构建不带控制台的 EXE，并生成 `build\dingding-attendance.zip`。发布文件位于 `build\dingding-attendance\`，构建中间文件位于 `build\pyinstaller\`；整个 `build/` 已被 Git 忽略。打包失败会保留错误信息，退出码为非零；不要把之前的旧 ZIP 当成本次新版本。
+直接从源码生成 ZIP，不创建中间发布目录；整个 `build/` 已被 Git 忽略。打包失败返回非零退出码，保留之前的 ZIP；不要把旧文件当成本次新版本。
 
 ZIP 解压后的结构如下，模板集中在独立目录，不自动读取：
 
 ```text
-build\dingding-attendance\
-  dingding-attendance.exe
+dingding-attendance\
+  启动考勤工作台.vbs
+  一键统计考勤.bat
+  main.py
+  requirements.txt
+  attendance_analyzer\
+    *.py
+    web\
+      index.html
+      app.css
+      app.js
   config.json
   使用说明.txt
   配置模板\
@@ -172,14 +180,14 @@ build\dingding-attendance\
 
 ZIP 使用明确文件清单生成，`input`、`output`、`logs` 在 ZIP 内始终为空，不会带入开发机上的实际考勤、报表和日志；当前正式 JSON 中的规则和公司假安排会随包分发。
 
-将 ZIP 发给 HR，右键“全部解压缩”到桌面等可写目录后双击 EXE，不要在压缩包里直接运行。
+将 ZIP 发给 HR，右键“全部解压缩”到桌面等可写目录，首次安装 Python 和依赖后双击 `启动考勤工作台.vbs`。不要在压缩包里直接运行。
 
 1. 在网页中点击“选择文件”多选，或把钉钉导出的原始文件拖入“原始考勤”区域。程序复制到软件同目录的 `input`，保留原始位置文件；遇同名文件可替换、跳过或取消。同一批不同目录中的同名文件需先重命名。
 2. 点击“开始统计全部”，处理 `input` 第一层的全部有效 `.xlsx` / `.xlsm`；列表选择只用于打开或清理，不限制本次统计范围。子目录、临时文件及已有分析报表不参与统计。
 3. `output` 列表按批次展示结果，展开可双击打开单份报表，或选择批次点击“打开所选”。每次统计新建 `output/统计_日期_时间`，保留历史和失败批次已完成的结果。
 4. 两个列表均可按 Ctrl / Shift 多选后移到回收站，也可清空对应目录。清理前确认文件清单；删除批次包含其中全部文件。运行期间禁止导入、清理和编辑配置。
 
-“考勤规则”和“公司放假”都维护 EXE 同目录的唯一 `config.json`，保存后下次统计生效。需要恢复默认配置时，可从“配置模板”复制 `config.json`，恢复前请保留自己的规则和公司假安排。原有的跨天日期、逐日时段编辑继续可用。
+“考勤规则”和“公司放假”都维护软件同目录的唯一 `config.json`，保存后下次统计生效。需要恢复默认配置时，可从“配置模板”复制 `config.json`，恢复前请保留自己的规则和公司假安排。原有的跨天日期、逐日时段编辑继续可用。
 
 窗口不再提供路径选择或路径参数，也不读取旧 `window_paths.json`。如之前使用外部目录或自选配置，升级前请把需要使用的文件复制到当前软件的 `input` 和 `config.json`，核对后再统计；整体移动软件时，随软件目录一起移动数据和配置即可。
 
