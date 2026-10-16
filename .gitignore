@@ -20,6 +20,7 @@ input/*
 !input/.gitkeep
 output/*
 !output/.gitkeep
+logs/
 outputs/
 *.xlsx
 *.xlsm

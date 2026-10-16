@@ -9,6 +9,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot ".." )).Path
 $outputRoot = Join-Path $repoRoot "build"
 $releaseDir = Join-Path $outputRoot $Name
 $buildDir = Join-Path $outputRoot (Join-Path "pyinstaller" $Name)
+$webAssets = Join-Path $repoRoot "attendance_analyzer\web"
 
 if (-not (Test-Path (Join-Path $repoRoot "main.py"))) {
     throw "Project entry point not found: $repoRoot\main.py"
@@ -22,9 +23,9 @@ try {
         throw "Python dependency installation failed with exit code $LASTEXITCODE"
     }
 
-    & $Python -X utf8 -c "from pathlib import Path; from attendance_analyzer.config import AppConfig; AppConfig.load(Path('config.json')); from attendance_analyzer.gui import create_root; root = create_root(); root.withdraw(); root.destroy(); print('JSON configuration and drag-and-drop runtime OK')"
+    & $Python -X utf8 -c "from pathlib import Path; from attendance_analyzer.config import AppConfig; from attendance_analyzer.gui import ASSETS; AppConfig.load(Path('config.json')); assert all((ASSETS / name).is_file() for name in ('index.html', 'app.css', 'app.js')); print('JSON configuration and web assets OK')"
     if ($LASTEXITCODE -ne 0) {
-        throw "Build preflight failed. Check the JSON configuration and install Python with Tcl/Tk support."
+        throw "Build preflight failed. Check the JSON configuration and web assets."
     }
     & $Python -X utf8 -m unittest discover -s tests
     if ($LASTEXITCODE -ne 0) {
@@ -37,7 +38,7 @@ try {
         --clean `
         --onefile `
         --windowed `
-        --collect-all tkinterdnd2 `
+        --add-data "$webAssets;attendance_analyzer/web" `
         --name $Name `
         --distpath $releaseDir `
         --workpath $buildDir `

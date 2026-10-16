@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>考勤工作台</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='12' fill='%237052ed'/%3E%3Cpath d='M11 21l6 6 13-14' fill='none' stroke='white' stroke-width='4'/%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="app.css" />
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <svg class="svg-defs" aria-hidden="true">
+      <defs>
+        <symbol id="i-grid" viewBox="0 0 24 24">
+          <rect x="3" y="3" width="7" height="7" rx="2" />
+          <rect x="14" y="3" width="7" height="7" rx="2" />
+          <rect x="3" y="14" width="7" height="7" rx="2" />
+          <rect x="14" y="14" width="7" height="7" rx="2" />
+        </symbol>
+        <symbol id="i-tune" viewBox="0 0 24 24">
+          <path d="M4 6h16M4 12h16M4 18h16M8 3v6m8 0v6m-6 0v6" />
+        </symbol>
+        <symbol id="i-calendar" viewBox="0 0 24 24">
+          <rect x="3" y="5" width="18" height="16" rx="3" />
+          <path d="M7 3v4m10-4v4M3 11h18m-13 5h2m4 0h2" />
+        </symbol>
+        <symbol id="i-folder" viewBox="0 0 24 24">
+          <path
+            d="M3 7a2 2 0 0 1 2-2h5l2 3h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"
+          />
+        </symbol>
+        <symbol id="i-upload" viewBox="0 0 24 24">
+          <path
+            d="M12 16V3m-5 5 5-5 5 5M4 15v4a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-4"
+          />
+        </symbol>
+        <symbol id="i-file" viewBox="0 0 24 24">
+          <path
+            d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Zm0 0v6h6M8 13h8m-8 4h5"
+          />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path d="m5 12 4 4L19 6" />
+        </symbol>
+        <symbol id="i-chevron" viewBox="0 0 24 24">
+          <path d="m9 5 7 7-7 7" />
+        </symbol>
+        <symbol id="i-refresh" viewBox="0 0 24 24">
+          <path
+            d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 3M4 15l2 3a7 7 0 0 0 12-1"
+          />
+        </symbol>
+        <symbol id="i-trash" viewBox="0 0 24 24">
+          <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7m4-7v7" />
+        </symbol>
+        <symbol id="i-play" viewBox="0 0 24 24">
+          <path d="m8 4 12 8-12 8Z" />
+        </symbol>
+        <symbol id="i-copy" viewBox="0 0 24 24">
+          <rect x="8" y="8" width="13" height="13" rx="2" />
+          <path d="M16 8V3H3v13h5" />
+        </symbol>
+        <symbol id="i-external" viewBox="0 0 24 24">
+          <path d="M14 3h7v7m0-7L10 14m-1-9H3v16h16v-6" />
+        </symbol>
+        <symbol id="i-close" viewBox="0 0 24 24">
+          <path d="m6 6 12 12M6 18 18 6" />
+        </symbol>
+        <symbol id="i-info" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="9" />
+          <path d="M12 11v6m0-10v1" />
+        </symbol>
+        <symbol id="i-power" viewBox="0 0 24 24">
+          <path d="M12 2v10M6 5a9 9 0 1 0 12 0" />
+        </symbol>
+      </defs>
+    </svg>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="#"
+          ><span class="brand-mark"
+            ><svg><use href="#i-check" /></svg></span
+          ><span>考勤工作台<small>ATTENDANCE STUDIO</small></span></a
+        >
+        <div class="nav-caption">工作空间</div>
+        <nav aria-label="主导航">
+          <button class="nav-item active" aria-current="page">
+            <svg><use href="#i-grid" /></svg>统计工作台<span
+              class="nav-dot"
+            ></span>
+          </button>
+          <button class="nav-item" id="edit-rules" data-lock title="考勤规则">
+            <svg><use href="#i-tune" /></svg>考勤规则<svg class="nav-arrow">
+              <use href="#i-chevron" />
+            </svg>
+          </button>
+          <button
+            class="nav-item"
+            id="edit-holidays"
+            data-lock
+            title="公司放假"
+          >
+            <svg><use href="#i-calendar" /></svg>公司放假<svg class="nav-arrow">
+              <use href="#i-chevron" />
+            </svg>
+          </button>
+        </nav>
+        <div class="sidebar-bottom">
+          <div class="local-card">
+            <span class="local-orb"></span><strong>安心本地处理</strong>
+            <p>考勤资料保存在本机<br />每一次统计都有迹可查</p>
+          </div>
+          <button id="exit" class="nav-item exit" title="退出程序">
+            <svg><use href="#i-power" /></svg>退出程序
+          </button>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <span>工作空间 <span class="slash">/</span> <b>统计工作台</b></span
+          ><span class="connection" id="connection"><i></i>本机服务已连接</span>
+        </header>
+        <main>
+          <div class="page-heading">
+            <div>
+              <div class="eyebrow">每一份出勤，都清晰有据</div>
+              <h1>把考勤，理清楚<span class="heading-dot">.</span></h1>
+              <p>导入原始文档，自动核算，留出时间处理真正需要关注的事。</p>
+            </div>
+            <button class="btn" id="refresh" data-lock>
+              <svg><use href="#i-refresh" /></svg>刷新列表
+            </button>
+          </div>
+          <div id="error-banner" class="banner error" role="alert" hidden>
+            <svg><use href="#i-info" /></svg>
+            <div>
+              <strong>需要处理</strong>
+              <p id="error-message"></p>
+              <button class="text-button" id="copy-error">复制错误详情</button>
+            </div>
+            <button
+              class="icon-button"
+              id="dismiss-error"
+              aria-label="关闭错误提示"
+            >
+              <svg><use href="#i-close" /></svg>
+            </button>
+          </div>
+          <div class="file-grid">
+            <section
+              class="card file-panel"
+              id="input-panel"
+              aria-labelledby="input-title"
+            >
+              <div class="panel-heading">
+                <div class="panel-title">
+                  <span class="panel-icon violet"
+                    ><svg><use href="#i-upload" /></svg
+                  ></span>
+                  <div>
+                    <h2 id="input-title">原始考勤</h2>
+                    <span class="subtle">导入钉钉导出的原始文档</span>
+                  </div>
+                </div>
+                <span class="count" id="input-count">0 份待统计</span>
+              </div>
+              <div
+                class="drop-zone"
+                id="drop-zone"
+                tabindex="0"
+                role="button"
+                aria-label="添加或拖入考勤文件"
+              >
+                <span class="drop-icon"
+                  ><svg><use href="#i-upload" /></svg
+                ></span>
+                <div>
+                  <strong>拖入考勤文件，或 <span>选择文件</span></strong>
+                  <p>支持 .xlsx / .xlsm · 多份文件一起添加</p>
+                </div>
+                <span class="drop-plus">+</span>
+              </div>
+              <input
+                type="file"
+                id="file-picker"
+                accept=".xlsx,.xlsm"
+                multiple
+                hidden
+              />
+              <div class="list-toolbar">
+                <label class="select-all"
+                  ><input
+                    type="checkbox"
+                    id="select-input"
+                    aria-label="全选原始考勤"
+                  /><span id="input-selected">全部文件</span></label
+                >
+                <div>
+                  <button
+                    class="text-button danger"
+                    id="remove-input"
+                    disabled
+                    data-lock
+                  >
+                    移到回收站</button
+                  ><button
+                    class="text-button muted"
+                    id="clear-input"
+                    disabled
+                    data-lock
+                  >
+                    清空
+                  </button>
+                </div>
+              </div>
+              <div
+                class="file-list"
+                id="input-list"
+                role="list"
+                aria-label="原始考勤文件"
+              ></div>
+              <footer class="panel-footer">
+                <span>双击打开 · Ctrl / Shift 多选</span
+                ><button class="text-button" id="open-input">
+                  <svg><use href="#i-folder" /></svg>打开文件夹
+                </button>
+              </footer>
+            </section>
+            <section class="card file-panel" aria-labelledby="output-title">
+              <div class="panel-heading">
+                <div class="panel-title">
+                  <span class="panel-icon mint"
+                    ><svg><use href="#i-folder" /></svg
+                  ></span>
+                  <div>
+                    <h2 id="output-title">统计结果</h2>
+                    <span class="subtle">每次统计独立保存，历史随时可查</span>
+                  </div>
+                </div>
+                <span class="count green" id="output-count">0 个批次</span>
+              </div>
+              <div class="result-note">
+                <svg><use href="#i-info" /></svg
+                ><span>报表包含加班汇总、待补卡及待审核清单</span>
+              </div>
+              <div class="list-toolbar">
+                <label class="select-all"
+                  ><input
+                    type="checkbox"
+                    id="select-output"
+                    aria-label="全选统计结果"
+                  /><span id="output-selected">全部结果</span></label
+                >
+                <div>
+                  <button class="text-button" id="open-selected" disabled>
+                    打开所选</button
+                  ><button
+                    class="text-button danger"
+                    id="remove-output"
+                    disabled
+                    data-lock
+                  >
+                    移到回收站</button
+                  ><button
+                    class="text-button muted"
+                    id="clear-output"
+                    disabled
+                    data-lock
+                  >
+                    清空
+                  </button>
+                </div>
+              </div>
+              <div
+                class="file-list"
+                id="output-list"
+                role="list"
+                aria-label="统计结果文件"
+              ></div>
+              <footer class="panel-footer">
+                <span>展开批次，查看单份报表</span
+                ><button class="text-button" id="open-output">
+                  <svg><use href="#i-folder" /></svg>打开文件夹
+                </button>
+              </footer>
+            </section>
+          </div>
+          <section class="card run-card" id="run-card" aria-live="polite">
+            <div class="run-top">
+              <div class="run-summary">
+                <div class="run-indicator" id="run-indicator">
+                  <svg><use href="#i-check" /></svg>
+                </div>
+                <div>
+                  <h2 id="run-title">准备就绪</h2>
+                  <p id="run-status">正在连接本机服务…</p>
+                </div>
+              </div>
+              <div class="run-actions">
+                <button class="btn" id="open-result" disabled>
+                  <svg><use href="#i-external" /></svg>打开本次结果</button
+                ><button class="btn primary" id="start" disabled data-lock>
+                  <svg><use href="#i-play" /></svg><span>开始统计全部</span>
+                </button>
+              </div>
+            </div>
+            <div class="progress-line">
+              <div
+                class="progress-track"
+                role="progressbar"
+                aria-label="文件完成进度"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="0"
+              >
+                <div id="progress-fill"></div>
+              </div>
+              <span id="progress-count">等待添加文件</span>
+            </div>
+            <div class="run-bottom">
+              <span>统计 input 中全部有效文件，列表勾选仅用于文件管理。</span
+              ><button
+                id="toggle-details"
+                class="text-button"
+                aria-expanded="false"
+              >
+                处理详情 <svg><use href="#i-chevron" /></svg>
+              </button>
+            </div>
+            <div class="details" id="details" hidden>
+              <div class="detail-toolbar">
+                <span>本次处理记录</span>
+                <div>
+                  <button class="text-button" id="open-log" disabled>
+                    打开日志</button
+                  ><button class="text-button" id="copy-log">
+                    <svg><use href="#i-copy" /></svg>复制详情
+                  </button>
+                </div>
+              </div>
+              <pre id="log" tabindex="0">本次处理记录会显示在这里。</pre>
+            </div>
+          </section>
+          <div class="page-footer">
+            <span
+              ><svg><use href="#i-check" /></svg>规则与公司放假自动保留</span
+            ><span>每月一份完整文件 · 结果请核对待审核清单</span>
+          </div>
+        </main>
+      </div>
+    </div>
+    <dialog id="editor" class="editor-dialog" aria-labelledby="editor-title">
+      <div class="dialog-heading">
+        <div>
+          <span class="eyebrow">工作空间设置</span>
+          <h2 id="editor-title"></h2>
+          <p>保存后下次统计生效，重新打开会保留设置。</p>
+        </div>
+        <button class="icon-button" id="close-editor" aria-label="关闭编辑窗口">
+          <svg><use href="#i-close" /></svg>
+        </button>
+      </div>
+      <div id="editor-error" class="form-error" role="alert" hidden></div>
+      <div class="editor-body" id="editor-body"></div>
+      <footer class="dialog-footer">
+        <span id="save-hint">修改仅在保存后生效</span>
+        <div>
+          <button class="btn" id="cancel-editor">取消</button
+          ><button class="btn primary" id="save-editor">保存并关闭</button>
+        </div>
+      </footer>
+    </dialog>
+    <dialog id="confirm" class="confirm-dialog" aria-labelledby="confirm-title">
+      <div class="confirm-icon">
+        <svg><use href="#i-info" /></svg>
+      </div>
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-message"></p>
+      <ul id="confirm-files"></ul>
+      <div class="confirm-actions" id="confirm-actions"></div>
+    </dialog>
+    <div id="toast" role="status" hidden></div>
+    <div id="offline" class="offline" hidden>
+      <div class="card">
+        <span class="brand-mark"
+          ><svg><use href="#i-check" /></svg
+        ></span>
+        <h1 id="offline-title">程序已退出</h1>
+        <p id="offline-text">可以关闭此标签页，下次双击程序即可重新打开。</p>
+        <button class="btn primary" id="reconnect">重新连接</button>
+      </div>
+    </div>
+  </body>
+</html>
