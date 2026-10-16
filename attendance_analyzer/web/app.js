@@ -213,7 +213,7 @@ function renderFiles(kind) {
         "p",
         "",
         kind === "input"
-          ? "将文件拖到这里，或点击上方选择文件"
+          ? "拖入文件、按 Ctrl+V 粘贴，或点击上方选择文件"
           : "完成统计后，报表会按批次出现在这里",
       ),
     );
@@ -1201,6 +1201,24 @@ $("file-picker").onchange = (event) => {
   event.target.value = "";
   importFiles(files);
 };
+document.addEventListener("paste", (event) => {
+  if (
+    event.defaultPrevented ||
+    state.editor ||
+    state.busy ||
+    state.working ||
+    !state.connected ||
+    $("confirm").open ||
+    event.target.closest?.(
+      "input:not([type=checkbox]):not([type=radio]), textarea, select, [contenteditable]",
+    )
+  )
+    return;
+  const files = [...(event.clipboardData?.files || [])];
+  if (!files.length) return;
+  event.preventDefault();
+  importFiles(files);
+});
 for (const eventName of ["dragover", "drop"])
   document.addEventListener(eventName, (event) => event.preventDefault());
 $("input-panel").addEventListener("dragover", (event) => {

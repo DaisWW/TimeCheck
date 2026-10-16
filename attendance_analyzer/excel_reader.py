@@ -73,14 +73,15 @@ class DingTalkWorkbookReader:
         headers = _headers(sheet, header_rows=(3, 4))
         rows: list[DailyAttendance] = []
         input_issues = input_issues if input_issues is not None else []
+        max_column = sheet.max_column
         for row in range(5, sheet.max_row + 1):
-            if not _row_has_data(sheet, row):
+            if not _row_has_data(sheet, row, max_column):
                 continue
             name = _cell(sheet, row, headers, "姓名")
             date_text = _cell(sheet, row, headers, "日期")
             work_date = parse_date_text(_value(sheet, row, headers, "日期"))
             if not name:
-                if _row_has_data(sheet, row):
+                if _row_has_data(sheet, row, max_column):
                     input_issues.append(
                         _input_issue(
                             sheet,
@@ -219,9 +220,10 @@ class DingTalkWorkbookReader:
         headers = _headers(sheet, header_rows=(3,))
         grouped: dict[tuple[str, date], list[PunchRecord]] = defaultdict(list)
         input_issues = input_issues if input_issues is not None else []
+        max_column = sheet.max_column
 
         for row in range(4, sheet.max_row + 1):
-            if not _row_has_data(sheet, row):
+            if not _row_has_data(sheet, row, max_column):
                 continue
             name = _cell(sheet, row, headers, "姓名")
             user_id = _cell(sheet, row, headers, "UserId")
@@ -231,7 +233,7 @@ class DingTalkWorkbookReader:
             attendance_date = parse_date_text(_value(sheet, row, headers, "考勤日期"))
             result = _cell(sheet, row, headers, "打卡结果")
             if not name:
-                if _row_has_data(sheet, row):
+                if _row_has_data(sheet, row, max_column):
                     input_issues.append(
                         _input_issue(
                             sheet,
@@ -431,10 +433,10 @@ def _value(sheet: Worksheet, row: int, headers: dict[str, int], name: str) -> An
     return sheet.cell(row, column).value
 
 
-def _row_has_data(sheet: Worksheet, row: int) -> bool:
+def _row_has_data(sheet: Worksheet, row: int, max_column: int) -> bool:
     return any(
         value is not None and str(value).strip()
-        for value in (sheet.cell(row, column).value for column in range(1, sheet.max_column + 1))
+        for value in (sheet.cell(row, column).value for column in range(1, max_column + 1))
     )
 
 

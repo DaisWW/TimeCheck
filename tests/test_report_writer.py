@@ -3,11 +3,14 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from attendance_analyzer.config import AppConfig, RestDayConfig
 from attendance_analyzer.models import InputIssue, OvertimeResult
-from attendance_analyzer.report_writer import OvertimeReportWriter, _supplement_punch_issue
+from attendance_analyzer.report_writer import (
+    OvertimeReportWriter, RED_FILL, RED_FONT, _finish_sheet, _mark_row,
+    _style_header, _supplement_punch_issue,
+)
 
 
 def _result(work_date: date, **overrides) -> OvertimeResult:
@@ -31,6 +34,42 @@ def _result(work_date: date, **overrides) -> OvertimeResult:
 
 
 class OvertimeReportWriterTest(unittest.TestCase):
+    def test_formatting_preserves_independent_cell_formats_and_highlights(self):
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["UserId", "日期", "备注", "分钟", "状态"])
+        for day in (1, 2, 3):
+            sheet.append(["000123", date(2026, 9, day), "详细计算说明" * 10, 60, "正常"])
+        _mark_row(sheet[2], RED_FILL, RED_FONT)
+        _mark_row(sheet[3], RED_FILL, RED_FONT)
+        _style_header(sheet)
+        _finish_sheet(sheet)
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "formatting.xlsx"
+            workbook.save(path)
+            workbook.close()
+            saved = load_workbook(path)
+            try:
+                sheet = saved.active
+                for row in sheet.iter_rows(min_row=2):
+                    self.assertEqual(row[0].value, "000123")
+                    self.assertEqual(row[0].number_format, "@")
+                    self.assertEqual(row[1].number_format, "yyyy-mm-dd")
+                    self.assertTrue(row[2].alignment.wrap_text)
+                    self.assertEqual(row[3].number_format, "General")
+                    self.assertEqual(row[4].number_format, "General")
+                    self.assertFalse(row[4].alignment.wrap_text)
+                    for cell in row:
+                        self.assertEqual(cell.border.bottom.style, "hair")
+                        if cell.row < 4:
+                            self.assertEqual(cell.fill, RED_FILL)
+                            self.assertEqual(cell.font, RED_FONT)
+                        else:
+                            self.assertIsNone(cell.fill.fill_type)
+            finally:
+                saved.close()
+
     def test_configured_holiday_without_attendance_does_not_require_punches(self):
         config = AppConfig(rest_day=RestDayConfig(holiday_dates=(date(2026, 10, 1),)))
         result = _result(date(2026, 10, 1), overtime_type="节假日", notes=["有效上下班打卡不足"])

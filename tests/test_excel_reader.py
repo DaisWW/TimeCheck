@@ -1,13 +1,55 @@
 from datetime import date
 import unittest
+from unittest.mock import patch
 
 from openpyxl import Workbook
+from openpyxl.worksheet.worksheet import Worksheet
 
 from attendance_analyzer.config import AppConfig
 from attendance_analyzer.excel_reader import DingTalkWorkbookReader
 
 
 class DingTalkWorkbookReaderTest(unittest.TestCase):
+    def test_dimension_scans_do_not_grow_with_attendance_rows(self):
+        for daily in (True, False):
+            scan_counts = []
+            for row_count in (10, 100):
+                workbook = Workbook()
+                sheet = workbook.active
+                sheet.append([])
+                sheet.append([])
+                if daily:
+                    sheet.append([
+                        "姓名", "UserId", "日期", "班次", "上班1打卡时间", "上班1打卡结果",
+                        "下班1打卡时间", "下班1打卡结果", "关联的审批单",
+                    ])
+                    sheet.append([])
+                    row = ["Alice", "u1", "2026-08-03", "A 09:30-18:30", "09:30", "正常", "20:00", "正常", ""]
+                else:
+                    sheet.append(["姓名", "UserId", "考勤日期", "打卡时间", "打卡结果"])
+                    row = ["Alice", "u1", "2026-08-03", "2026-08-03 09:30", "正常"]
+                for _ in range(row_count):
+                    sheet.append(row)
+
+                scans = []
+                original = Worksheet.max_column.fget
+
+                def max_column(worksheet):
+                    scans.append(1)
+                    return original(worksheet)
+
+                reader = DingTalkWorkbookReader(AppConfig())
+                with patch.object(Worksheet, "max_column", property(max_column)):
+                    if daily:
+                        self.assertEqual(len(reader._read_daily_records(sheet)), row_count)
+                    else:
+                        punches = reader._read_raw_punches(sheet)
+                        self.assertEqual(len(punches[("u1", date(2026, 8, 3))]), row_count)
+                scan_counts.append(len(scans))
+                workbook.close()
+            with self.subTest(daily=daily):
+                self.assertEqual(scan_counts[0], scan_counts[1])
+
     def test_raw_punches_use_attendance_date_instead_of_clock_date(self):
         workbook = Workbook()
         sheet = workbook.active

@@ -72,6 +72,15 @@ class InputValidationTest(unittest.TestCase):
                 with self.assertRaisesRegex(WorkbookInputError, "表头"):
                     self.read(workbook)
 
+    def test_missing_names_are_reported_in_both_sheets(self):
+        workbook = valid_workbook()
+        workbook["每日统计"]["A5"] = None
+        workbook["原始记录"]["A4"] = None
+        with self.assertRaises(WorkbookInputError) as raised:
+            self.read(workbook)
+        for fragment in ("每日统计 第 5 行 [姓名]", "原始记录 第 4 行 [姓名]", "缺少姓名"):
+            self.assertIn(fragment, str(raised.exception))
+
     def test_duplicate_day_and_orphan_raw_record_are_errors(self):
         workbook = valid_workbook()
         daily = workbook["每日统计"]

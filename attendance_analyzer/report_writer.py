@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from copy import copy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 import re
@@ -769,19 +770,27 @@ def _summary_status(input_issue_count: int, supplement_count: int, review_count:
 
 
 def _style_header(sheet) -> None:
+    header = sheet.cell(1, 1)
+    header.fill = HEADER_FILL
+    header.font = Font(color="FFFFFF", bold=True)
+    header.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    header.border = Border(bottom=Side(style="medium", color="17365D"))
     for cell in sheet[1]:
-        cell.fill = HEADER_FILL
-        cell.font = Font(color="FFFFFF", bold=True)
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        cell.border = Border(bottom=Side(style="medium", color="17365D"))
+        cell._style = copy(header._style)
     sheet.row_dimensions[1].height = 34
 
 
 def _mark_row(row, fill: PatternFill, font: Font | None) -> None:
+    styles = {}
     for cell in row:
-        cell.fill = fill
-        if font is not None:
-            cell.font = font
+        key = tuple(cell._style) if cell.has_style else None
+        if key not in styles:
+            cell.fill = fill
+            if font is not None:
+                cell.font = font
+            styles[key] = copy(cell._style)
+        else:
+            cell._style = copy(styles[key])
 
 
 def _mark_cells(row, indexes: set[int], fill: PatternFill, font: Font | None) -> None:
@@ -801,11 +810,20 @@ def _finish_sheet(sheet) -> None:
     else:
         sheet.freeze_panes = "E2" if sheet.max_column > 25 else "A2"
 
+    # 复用相同格式的完整样式，避免为每个单元格重复计算边框等对象的哈希。
+    # 每格仍复制一份，后续日期/文本格式修改不会影响其他单元格。
+    styles = {}
     for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
         for cell in row:
-            cell.border = GRID_BORDER
-            if isinstance(cell.value, str) and len(cell.value) > 24:
-                cell.alignment = Alignment(vertical="top", wrap_text=True)
+            wrap_text = isinstance(cell.value, str) and len(cell.value) > 24
+            key = (tuple(cell._style) if cell.has_style else None, wrap_text)
+            if key not in styles:
+                cell.border = GRID_BORDER
+                if wrap_text:
+                    cell.alignment = Alignment(vertical="top", wrap_text=True)
+                styles[key] = copy(cell._style)
+            else:
+                cell._style = copy(styles[key])
 
     header_by_col = {cell.column: str(cell.value) for cell in sheet[1]}
     for column_cells in sheet.columns:
