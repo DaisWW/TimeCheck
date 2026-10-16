@@ -80,6 +80,7 @@ function showError(error) {
 function formError(error) {
   $("editor-error").textContent = error.message || String(error);
   $("editor-error").hidden = false;
+  $("editor-error").scrollIntoView({ block: "nearest" });
   if (state.editor?.kind === "rules") {
     for (const field of state.editor.fields) {
       if (
@@ -158,10 +159,12 @@ function syncControls() {
       ? "开始统计全部"
       : "再次统计全部";
   $("exit").disabled = state.running || state.working;
+  $("show-dashboard").disabled = state.working || !state.connected;
   if (state.editor) {
     $("editor")
       .querySelectorAll("input,select,textarea,button")
       .forEach((control) => (control.disabled = busy));
+    $("save-editor").disabled = $("discard-editor").disabled = busy || !isDirty();
   }
 }
 
@@ -987,9 +990,30 @@ function isDirty() {
   );
 }
 function updateDirty() {
-  $("save-hint").textContent = isDirty()
+  const dirty = isDirty();
+  $("save-hint").textContent = dirty
     ? "有未保存的修改"
-    : "配置已与本机保存内容同步";
+    : "当前设置已保存 · 下次统计生效";
+  $("save-hint").classList.toggle("dirty", dirty);
+  syncControls();
+}
+
+function showPage(page) {
+  document.body.classList.toggle("settings-active", page !== "dashboard");
+  $("dashboard").hidden = page !== "dashboard";
+  $("editor").hidden = page === "dashboard";
+  document.querySelectorAll("[data-page]").forEach((item) => {
+    const active = item.dataset.page === page;
+    item.classList.toggle("active", active);
+    if (active) item.setAttribute("aria-current", "page");
+    else item.removeAttribute("aria-current");
+  });
+  $("current-page").textContent =
+    page === "dashboard" ? "统计工作台" : $("editor-title").textContent;
+  window.scrollTo({ top: 0 });
+  $(page === "dashboard" ? "dashboard-title" : "editor-title").focus({
+    preventScroll: true,
+  });
 }
 
 async function openEditor(kind) {
@@ -1003,11 +1027,15 @@ async function openEditor(kind) {
     rangeTouched: false,
   };
   $("editor-title").textContent = kind === "rules" ? "考勤规则" : "公司放假";
+  $("editor-description").textContent =
+    kind === "rules"
+      ? "按类别维护核算口径，保存后用于下一次统计。"
+      : "安排公司全天或半天假期，支持跨天选择与逐日调整。";
   $("editor-error").hidden = true;
   $("editor-body").replaceChildren();
   kind === "rules" ? renderRules() : renderHolidays();
   updateDirty();
-  $("editor").showModal();
+  showPage(kind);
 }
 
 async function saveEditor() {
@@ -1024,38 +1052,63 @@ async function saveEditor() {
     if (choice === "cancel") return false;
     if (choice === "add") await addRange();
   }
-  await api("save_settings", {
+  const saved = await api("save_settings", {
     kind: state.editor.kind,
     values: editorValues(),
     revision: state.editor.revision,
   });
-  $("editor").close();
-  state.editor = null;
+  state.editor.initial = structuredClone(saved.values);
+  state.editor.revision = saved.revision;
+  state.editor.rows = structuredClone(saved.values);
+  state.editor.rangeTouched = false;
+  if (state.editor.kind === "rules") {
+    $("editor-body")
+      .querySelectorAll("[data-rule]")
+      .forEach((control) => {
+        control.value = saved.values[control.dataset.rule];
+        control.classList.remove("invalid");
+      });
+  } else {
+    $("editor-body").replaceChildren();
+    renderHolidays();
+  }
+  $("editor-error").hidden = true;
+  updateDirty();
   toast("配置已保存，下次统计使用新设置");
   await refreshFiles();
   return true;
 }
 
-async function cancelEditor() {
-  if (state.working) return;
+async function leaveEditor() {
   if (isDirty()) {
     const choice = await ask(
       "保留这次修改吗？",
-      "未保存的修改尚未写入 config.json。",
+      "离开当前页面前，请保存或放弃未保存的修改。",
       [
         { label: "继续编辑", value: "cancel" },
         { label: "放弃修改", value: "discard" },
-        { label: "保存并关闭", value: "save", style: "primary" },
+        { label: "保存并离开", value: "save", style: "primary" },
       ],
     );
-    if (choice === "cancel") return;
-    if (choice === "save") {
-      await perform(saveEditor, true);
-      return;
-    }
+    if (choice === "cancel") return false;
+    if (choice === "save") return saveEditor();
   }
-  $("editor").close();
-  state.editor = null;
+  return true;
+}
+
+function navigate(page) {
+  if (page === (state.editor?.kind || "dashboard")) return;
+  return perform(
+    async () => {
+      if (!(await leaveEditor())) return;
+      if (page === "dashboard") {
+        state.editor = null;
+        $("editor-body").replaceChildren();
+        showPage(page);
+      } else await openEditor(page);
+    },
+    !!state.editor,
+  );
 }
 
 async function copyText(text) {
@@ -1077,14 +1130,24 @@ async function copyText(text) {
 }
 
 $("refresh").onclick = () => perform(refreshFiles);
-$("edit-rules").onclick = () => perform(() => openEditor("rules"));
-$("edit-holidays").onclick = () => perform(() => openEditor("holidays"));
-$("save-editor").onclick = () => perform(saveEditor, true);
-$("close-editor").onclick = $("cancel-editor").onclick = cancelEditor;
-$("editor").addEventListener("cancel", (event) => {
-  event.preventDefault();
-  cancelEditor();
+document.querySelectorAll("[data-page]").forEach((item) => {
+  item.onclick = () => navigate(item.dataset.page);
 });
+document.querySelector(".brand").onclick = (event) => {
+  event.preventDefault();
+  if (state.connected) navigate("dashboard");
+};
+$("save-editor").onclick = () => perform(saveEditor, true);
+$("discard-editor").onclick = () =>
+  perform(async () => {
+    if (
+      (await ask("放弃未保存的修改？", "当前页面将重新读取已保存的设置。", [
+        { label: "继续编辑", value: "cancel" },
+        { label: "放弃修改", value: "discard" },
+      ])) === "discard"
+    )
+      await openEditor(state.editor.kind);
+  }, true);
 $("dismiss-error").onclick = () => ($("error-banner").hidden = true);
 $("copy-error").onclick = () => copyText(state.error);
 $("copy-log").onclick = () => copyText(state.log);
@@ -1155,6 +1218,7 @@ $("input-panel").addEventListener("drop", (event) => {
 });
 $("exit").onclick = () =>
   perform(async () => {
+    if (!(await leaveEditor())) return;
     if (
       (await ask("退出考勤程序？", "本机服务会停止，文件和已保存配置保留。", [
         { label: "取消", value: "cancel" },
@@ -1163,6 +1227,7 @@ $("exit").onclick = () =>
     )
       return;
     await api("close");
+    state.editor = null;
     state.exited = true;
     clearTimeout(state.timer);
     $("offline-title").textContent = "程序已退出";
@@ -1170,13 +1235,11 @@ $("exit").onclick = () =>
       "可以关闭此标签页，下次双击程序即可重新打开。";
     $("offline").hidden = false;
     $("reconnect").hidden = true;
-  });
+  }, !!state.editor);
 $("reconnect").onclick = () => {
   clearTimeout(state.timer);
   polling();
 };
-document.querySelector(".nav-item.active").onclick = () =>
-  window.scrollTo({ top: 0, behavior: "smooth" });
 window.addEventListener("beforeunload", (event) => {
   if (isDirty() || state.working || state.running) {
     event.preventDefault();

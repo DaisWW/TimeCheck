@@ -87,25 +87,22 @@
         >
         <div class="nav-caption">工作空间</div>
         <nav aria-label="主导航">
-          <button class="nav-item active" aria-current="page">
+          <button class="nav-item active" id="show-dashboard" data-page="dashboard" aria-current="page" title="统计工作台">
             <svg><use href="#i-grid" /></svg>统计工作台<span
               class="nav-dot"
             ></span>
           </button>
-          <button class="nav-item" id="edit-rules" data-lock title="考勤规则">
-            <svg><use href="#i-tune" /></svg>考勤规则<svg class="nav-arrow">
-              <use href="#i-chevron" />
-            </svg>
+          <button class="nav-item" id="edit-rules" data-page="rules" data-lock title="考勤规则">
+            <svg><use href="#i-tune" /></svg>考勤规则<span class="nav-dot"></span>
           </button>
           <button
             class="nav-item"
             id="edit-holidays"
+            data-page="holidays"
             data-lock
             title="公司放假"
           >
-            <svg><use href="#i-calendar" /></svg>公司放假<svg class="nav-arrow">
-              <use href="#i-chevron" />
-            </svg>
+            <svg><use href="#i-calendar" /></svg>公司放假<span class="nav-dot"></span>
           </button>
         </nav>
         <div class="sidebar-bottom">
@@ -120,33 +117,29 @@
       </aside>
       <div class="workspace">
         <header class="topbar">
-          <span>工作空间 <span class="slash">/</span> <b>统计工作台</b></span
+          <span>工作空间 <span class="slash">/</span> <b id="current-page">统计工作台</b></span
           ><span class="connection" id="connection"><i></i>本机服务已连接</span>
         </header>
-        <main>
+        <div id="error-banner" class="banner error" role="alert" hidden>
+          <svg><use href="#i-info" /></svg>
+          <div>
+            <strong>需要处理</strong>
+            <p id="error-message"></p>
+            <button class="text-button" id="copy-error">复制错误详情</button>
+          </div>
+          <button class="icon-button" id="dismiss-error" aria-label="关闭错误提示">
+            <svg><use href="#i-close" /></svg>
+          </button>
+        </div>
+        <main id="dashboard" aria-labelledby="dashboard-title">
           <div class="page-heading">
             <div>
               <div class="eyebrow">每一份出勤，都清晰有据</div>
-              <h1>把考勤，理清楚<span class="heading-dot">.</span></h1>
+              <h1 id="dashboard-title" tabindex="-1">把考勤，理清楚<span class="heading-dot">.</span></h1>
               <p>导入原始文档，自动核算，留出时间处理真正需要关注的事。</p>
             </div>
             <button class="btn" id="refresh" data-lock>
               <svg><use href="#i-refresh" /></svg>刷新列表
-            </button>
-          </div>
-          <div id="error-banner" class="banner error" role="alert" hidden>
-            <svg><use href="#i-info" /></svg>
-            <div>
-              <strong>需要处理</strong>
-              <p id="error-message"></p>
-              <button class="text-button" id="copy-error">复制错误详情</button>
-            </div>
-            <button
-              class="icon-button"
-              id="dismiss-error"
-              aria-label="关闭错误提示"
-            >
-              <svg><use href="#i-close" /></svg>
             </button>
           </div>
           <div class="file-grid">
@@ -350,29 +343,30 @@
             ><span>每月一份完整文件 · 结果请核对待审核清单</span>
           </div>
         </main>
+        <main id="editor" class="settings-page" aria-labelledby="editor-title" hidden>
+          <div class="page-heading">
+            <div>
+              <div class="eyebrow">工作空间设置</div>
+              <h1 id="editor-title" tabindex="-1"></h1>
+              <p id="editor-description"></p>
+            </div>
+          </div>
+          <section class="card settings-card" aria-label="配置内容">
+            <div id="editor-error" class="form-error" role="alert" hidden></div>
+            <div class="editor-body" id="editor-body"></div>
+          </section>
+          <footer class="settings-footer">
+            <span id="save-hint" role="status">当前设置已保存</span>
+            <div>
+              <button class="btn" id="discard-editor" disabled>放弃修改</button>
+              <button class="btn primary" id="save-editor" disabled>
+                <svg><use href="#i-check" /></svg>保存更改
+              </button>
+            </div>
+          </footer>
+        </main>
       </div>
     </div>
-    <dialog id="editor" class="editor-dialog" aria-labelledby="editor-title">
-      <div class="dialog-heading">
-        <div>
-          <span class="eyebrow">工作空间设置</span>
-          <h2 id="editor-title"></h2>
-          <p>保存后下次统计生效，重新打开会保留设置。</p>
-        </div>
-        <button class="icon-button" id="close-editor" aria-label="关闭编辑窗口">
-          <svg><use href="#i-close" /></svg>
-        </button>
-      </div>
-      <div id="editor-error" class="form-error" role="alert" hidden></div>
-      <div class="editor-body" id="editor-body"></div>
-      <footer class="dialog-footer">
-        <span id="save-hint">修改仅在保存后生效</span>
-        <div>
-          <button class="btn" id="cancel-editor">取消</button
-          ><button class="btn primary" id="save-editor">保存并关闭</button>
-        </div>
-      </footer>
-    </dialog>
     <dialog id="confirm" class="confirm-dialog" aria-labelledby="confirm-title">
       <div class="confirm-icon">
         <svg><use href="#i-info" /></svg>

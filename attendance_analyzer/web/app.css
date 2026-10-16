@@ -190,11 +190,10 @@ p {
   background: #a795ff;
   margin-left: auto;
   box-shadow: 0 0 12px #b3a2ff;
+  opacity: 0;
 }
-.nav-arrow {
-  margin-left: auto;
-  width: 15px;
-  opacity: 0.5;
+.nav-item.active .nav-dot {
+  opacity: 1;
 }
 .sidebar-bottom {
   margin-top: auto;
@@ -903,6 +902,11 @@ pre {
   padding: 15px 16px;
   border-radius: 11px;
 }
+.workspace > .banner {
+  width: calc(100% - 60px);
+  max-width: 1510px;
+  margin: 24px auto 0;
+}
 .banner.error {
   background: var(--red-tint);
   color: var(--red);
@@ -964,63 +968,63 @@ dialog::backdrop {
   background: #050914b8;
   backdrop-filter: blur(5px);
 }
-.editor-dialog {
-  width: 940px;
-}
-.editor-dialog[open] {
+.settings-page {
+  min-height: calc(100dvh - 58px);
   display: flex;
   flex-direction: column;
 }
-.dialog-heading {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  padding: 25px 28px 21px;
-  border-bottom: 1px solid var(--line);
-  flex: none;
-}
-.dialog-heading h2 {
-  font-size: 22px;
-}
-.dialog-heading p {
-  font-size: 12px;
-  color: var(--muted);
-  margin-top: 7px;
-}
-.dialog-heading .eyebrow {
-  font-size: 11px;
-  margin-bottom: 5px;
-  color: var(--purple);
+.settings-card {
+  flex: 1;
+  min-width: 0;
 }
 .editor-body {
-  overflow: auto;
   min-height: 0;
-  padding: 23px 28px;
-  flex: 1;
+  padding: 24px;
 }
-.dialog-footer {
+.settings-footer {
+  position: sticky;
+  bottom: 16px;
+  z-index: 2;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
-  padding: 17px 28px;
-  border-top: 1px solid var(--line);
+  padding: 16px 22px;
+  margin-top: 20px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
   flex: none;
-  background: var(--surface);
+  background: var(--panel);
+  box-shadow: 0 8px 30px #00000040;
 }
-.dialog-footer > div {
+.settings-footer > div {
   display: flex;
   gap: 10px;
 }
-.dialog-footer > span {
+.settings-footer > span {
   font-size: 12px;
   color: var(--muted);
+}
+.settings-footer > span::before {
+  content: "";
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin: 0 9px 2px 0;
+  border-radius: 50%;
+  background: var(--green);
+}
+.settings-footer > .dirty {
+  color: var(--purple);
+}
+.settings-footer > .dirty::before {
+  background: var(--purple);
 }
 .form-error {
   background: var(--red-tint);
   color: var(--red);
   padding: 13px 20px;
-  margin: 14px 28px 0;
+  margin: 20px 24px 0;
   border: 1px solid #603348;
   border-radius: 8px;
   white-space: pre-wrap;
@@ -1028,16 +1032,13 @@ dialog::backdrop {
   line-height: 1.7;
   max-height: 150px;
   overflow: auto;
+  scroll-margin-top: 20px;
 }
 .rule-tabs {
   display: flex;
   gap: 6px;
   border-bottom: 1px solid var(--line);
   padding-bottom: 13px;
-  position: sticky;
-  top: -23px;
-  background: var(--panel);
-  z-index: 1;
 }
 .rule-tab {
   border: 0;
@@ -1261,10 +1262,7 @@ textarea:focus {
   color: var(--muted);
 }
 .holiday-rows {
-  max-height: 430px;
-  overflow: auto;
-  padding-right: 5px;
-  scrollbar-gutter: stable;
+  min-width: 0;
 }
 .holiday-row {
   display: grid;
@@ -1377,6 +1375,9 @@ textarea:focus {
   max-width: 70vw;
   text-align: center;
 }
+.settings-active #toast {
+  bottom: 108px;
+}
 .offline {
   position: fixed;
   inset: 0;
@@ -1450,6 +1451,9 @@ textarea:focus {
   main {
     padding: 27px 24px 16px;
   }
+  .workspace > .banner {
+    width: calc(100% - 48px);
+  }
   .topbar {
     padding: 0 24px;
   }
@@ -1510,7 +1514,6 @@ textarea:focus {
   .brand > span:last-child,
   .nav-caption,
   .nav-item > .nav-dot,
-  .nav-arrow,
   .local-card {
     display: none;
   }
@@ -1549,8 +1552,7 @@ textarea:focus {
   .editor-body {
     padding: 20px;
   }
-  .dialog-heading,
-  .dialog-footer {
+  .settings-footer {
     padding-left: 20px;
     padding-right: 20px;
   }
@@ -1558,6 +1560,9 @@ textarea:focus {
 @media (max-width: 760px) {
   main {
     padding: 25px 18px 15px;
+  }
+  .workspace > .banner {
+    width: calc(100% - 36px);
   }
   .topbar {
     padding: 0 18px;
@@ -1639,14 +1644,20 @@ textarea:focus {
     white-space: nowrap;
     padding: 9px 12px;
   }
-  .dialog-footer > span {
-    display: none;
+  .settings-footer {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 14px 16px;
+    gap: 12px;
   }
-  .dialog-footer {
+  .settings-footer > div {
     justify-content: flex-end;
   }
-  .editor-dialog {
-    max-height: calc(100dvh - 24px);
+  .settings-active #toast {
+    bottom: 144px;
+  }
+  .form-error {
+    margin: 16px 20px 0;
   }
   #toast {
     left: 50%;
