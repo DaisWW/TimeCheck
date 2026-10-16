@@ -35,6 +35,14 @@ class WebApiTest(unittest.TestCase):
             self.api._receive_upload(plan["token"], index, io.BytesIO(content), len(content))
         return plan
 
+    def test_first_list_creates_missing_directories_without_config_error(self):
+        self.assertFalse((self.base / "input").exists())
+        self.assertFalse((self.base / "output").exists())
+        files = self.ok(self.api.files())
+        self.assertEqual(files, {"input": [], "output": [], "config_error": None})
+        self.assertTrue((self.base / "input").is_dir())
+        self.assertTrue((self.base / "output").is_dir())
+
     def test_fixed_directories_ignore_old_paths_and_list_all_files(self):
         (self.base / "window_paths.json").write_text('{"config":"wrong"}')
         name = "研发中心_2026年09月_含 空格{括号}的超长考勤名称.xlsx"

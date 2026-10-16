@@ -20,7 +20,7 @@ from . import cli
 from .company_calendar import parse_company_holidays
 from .config import AppConfig, RULE_FIELDS
 from .config_forms import apply_rule_values, holiday_range_dates, rule_form_values
-from .file_manager import copy_input, is_link, list_entries, managed_path, prepare_import, recycle_entries
+from .file_manager import copy_input, ensure_directory, is_link, list_entries, managed_path, prepare_import, recycle_entries
 from .job_runner import outcome_message, run_job
 
 
@@ -91,6 +91,7 @@ class WebApi:
                 self._busy = False
 
     def _files(self):
+        ensure_directory(self._directory("input"))
         config_error = None
         try:
             config = AppConfig.load(self._config_path)
