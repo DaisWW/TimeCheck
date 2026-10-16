@@ -63,13 +63,6 @@ a:focus-visible,
   outline: 3px solid #bbaaff;
   outline-offset: 3px;
 }
-input:focus,
-select:focus,
-textarea:focus {
-  outline: 0;
-  border-color: var(--purple);
-  box-shadow: 0 0 0 3px #7052ed15;
-}
 input::placeholder,
 textarea::placeholder {
   color: var(--subtle);
@@ -1097,6 +1090,13 @@ textarea {
 textarea {
   resize: vertical;
   line-height: 1.7;
+}
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 0;
+  border-color: var(--purple);
+  box-shadow: 0 0 0 3px #baa7ff26;
 }
 .rule-field .invalid {
   border-color: var(--red);
